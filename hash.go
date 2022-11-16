@@ -3,6 +3,7 @@ package rosedb
 import (
 	"bytes"
 	"errors"
+	"github.com/flower-corp/rosedb/config"
 	"github.com/flower-corp/rosedb/ds/art"
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
@@ -23,7 +24,7 @@ func (db *RoseDB) HSet(key []byte, args ...[]byte) error {
 	defer db.hashIndex.mu.Unlock()
 
 	if len(args) == 0 || len(args)&1 == 1 {
-		return ErrWrongNumberOfArgs
+		return config.ErrWrongNumberOfArgs
 	}
 	if db.hashIndex.trees[string(key)] == nil {
 		db.hashIndex.trees[string(key)] = art.NewART()
@@ -98,7 +99,7 @@ func (db *RoseDB) HGet(key, field []byte) ([]byte, error) {
 	}
 	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
-	if err == ErrKeyNotFound {
+	if err == config.ErrKeyNotFound {
 		return nil, nil
 	}
 	return val, err
@@ -125,7 +126,7 @@ func (db *RoseDB) HMGet(key []byte, fields ...[]byte) (vals [][]byte, err error)
 
 	for _, field := range fields {
 		val, err := db.getVal(idxTree, field, Hash)
-		if err == ErrKeyNotFound {
+		if err == config.ErrKeyNotFound {
 			vals = append(vals, nil)
 		} else {
 			vals = append(vals, val)
@@ -184,7 +185,7 @@ func (db *RoseDB) HExists(key, field []byte) (bool, error) {
 	}
 	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
-	if err != nil && err != ErrKeyNotFound {
+	if err != nil && err != config.ErrKeyNotFound {
 		return false, err
 	}
 	return val != nil, nil
@@ -241,7 +242,7 @@ func (db *RoseDB) HVals(key []byte) ([][]byte, error) {
 			return nil, err
 		}
 		val, err := db.getVal(tree, node.Key(), Hash)
-		if err != nil && err != ErrKeyNotFound {
+		if err != nil && err != config.ErrKeyNotFound {
 			return nil, err
 		}
 		values = append(values, val)
@@ -269,7 +270,7 @@ func (db *RoseDB) HGetAll(key []byte) ([][]byte, error) {
 		}
 		field := node.Key()
 		val, err := db.getVal(tree, field, Hash)
-		if err != nil && err != ErrKeyNotFound {
+		if err != nil && err != config.ErrKeyNotFound {
 			return nil, err
 		}
 		pairs[index], pairs[index+1] = field, val
@@ -289,7 +290,7 @@ func (db *RoseDB) HStrLen(key, field []byte) int {
 	}
 	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
-	if err == ErrKeyNotFound {
+	if err == config.ErrKeyNotFound {
 		return 0
 	}
 	return len(val)
@@ -330,7 +331,7 @@ func (db *RoseDB) HScan(key []byte, prefix []byte, pattern string, count int) ([
 			continue
 		}
 		val, err := db.getVal(idxTree, field, Hash)
-		if err != nil && err != ErrKeyNotFound {
+		if err != nil && err != config.ErrKeyNotFound {
 			return nil, err
 		}
 		values[index], values[index+1] = field, val
@@ -353,7 +354,7 @@ func (db *RoseDB) HIncrBy(key, field []byte, incr int64) (int64, error) {
 
 	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
-	if err != nil && !errors.Is(err, ErrKeyNotFound) {
+	if err != nil && !errors.Is(err, config.ErrKeyNotFound) {
 		return 0, err
 	}
 	if bytes.Equal(val, nil) {
@@ -361,12 +362,12 @@ func (db *RoseDB) HIncrBy(key, field []byte, incr int64) (int64, error) {
 	}
 	valInt64, err := util.StrToInt64(string(val))
 	if err != nil {
-		return 0, ErrWrongValueType
+		return 0, config.ErrWrongValueType
 	}
 
 	if (incr < 0 && valInt64 < 0 && incr < (math.MinInt64-valInt64)) ||
 		(incr > 0 && valInt64 > 0 && incr > (math.MaxInt64-valInt64)) {
-		return 0, ErrIntegerOverflow
+		return 0, config.ErrIntegerOverflow
 	}
 
 	valInt64 += incr

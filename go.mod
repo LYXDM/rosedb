@@ -3,6 +3,7 @@ module github.com/flower-corp/rosedb
 go 1.16
 
 require (
+	github.com/BurntSushi/toml v1.2.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/plar/go-adaptive-radix-tree v1.0.4
 	github.com/spaolacci/murmur3 v1.1.0

@@ -2,16 +2,8 @@ package rosedb
 
 import (
 	"encoding/binary"
-	"errors"
-	"github.com/flower-corp/rosedb/ds/art"
-	"github.com/flower-corp/rosedb/ds/zset"
-	"github.com/flower-corp/rosedb/flock"
-	"github.com/flower-corp/rosedb/logfile"
-	"github.com/flower-corp/rosedb/logger"
-	"github.com/flower-corp/rosedb/util"
 	"io"
 	"io/ioutil"
-	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,37 +14,14 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-)
 
-var (
-	// ErrKeyNotFound key not found
-	ErrKeyNotFound = errors.New("key not found")
-
-	// ErrLogFileNotFound log file not found
-	ErrLogFileNotFound = errors.New("log file not found")
-
-	// ErrWrongNumberOfArgs doesn't match key-value pair numbers
-	ErrWrongNumberOfArgs = errors.New("wrong number of arguments")
-
-	// ErrIntegerOverflow overflows int64 limitations
-	ErrIntegerOverflow = errors.New("increment or decrement overflow")
-
-	// ErrWrongValueType value is not a number
-	ErrWrongValueType = errors.New("value is not an integer")
-
-	// ErrWrongIndex index is out of range
-	ErrWrongIndex = errors.New("index is out of range")
-
-	// ErrGCRunning log file gc is running
-	ErrGCRunning = errors.New("log file gc is running, retry later")
-)
-
-const (
-	logFileTypeNum   = 5
-	encodeHeaderSize = 10
-	initialListSeq   = math.MaxUint32 / 2
-	discardFilePath  = "DISCARD"
-	lockFileName     = "FLOCK"
+	"github.com/flower-corp/rosedb/config"
+	"github.com/flower-corp/rosedb/ds/art"
+	"github.com/flower-corp/rosedb/ds/zset"
+	"github.com/flower-corp/rosedb/flock"
+	"github.com/flower-corp/rosedb/logfile"
+	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/util"
 )
 
 type (
@@ -158,7 +127,7 @@ func Open(opts Options) (*RoseDB, error) {
 	}
 
 	// acquire file lock to prevent multiple processes from accessing the same directory.
-	lockPath := filepath.Join(opts.DBPath, lockFileName)
+	lockPath := filepath.Join(opts.DBPath, config.LockFileName)
 	lockGuard, err := flock.AcquireFileLock(lockPath, false)
 	if err != nil {
 		return nil, err
@@ -198,25 +167,39 @@ func Open(opts Options) (*RoseDB, error) {
 
 // Close db and save relative configs.
 func (db *RoseDB) Close() error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
+	//before stop do once gc
+	db.doRunGCSync()
+	db.dbFilePersist()
+	return nil
+}
 
+func (db *RoseDB) dbFilePersist() {
 	if db.fileLock != nil {
 		_ = db.fileLock.Release()
 	}
 	// close and sync the active file.
 	for _, activeFile := range db.activeLogFiles {
+		if activeFile == nil {
+			continue
+		}
+		_ = activeFile.Sync()
 		_ = activeFile.Close()
 	}
 	// close the archived files.
 	for _, archived := range db.archivedLogFiles {
 		for _, file := range archived {
+			if file == nil {
+				continue
+			}
 			_ = file.Sync()
 			_ = file.Close()
 		}
 	}
 	// close discard channel.
 	for _, dis := range db.discards {
+		if dis == nil {
+			continue
+		}
 		dis.closeChan()
 	}
 	atomic.StoreUint32(&db.closed, 1)
@@ -225,7 +208,6 @@ func (db *RoseDB) Close() error {
 	db.listIndex = nil
 	db.zsetIndex = nil
 	db.setIndex = nil
-	return nil
 }
 
 // Sync persist the db files to stable storage.
@@ -253,7 +235,7 @@ func (db *RoseDB) Sync() error {
 func (db *RoseDB) Backup(path string) error {
 	// if log file gc is running, can not backuo the db.
 	if atomic.LoadInt32(&db.gcState) > 0 {
-		return ErrGCRunning
+		return config.ErrGCRunning
 	}
 
 	if err := db.Sync(); err != nil {
@@ -272,7 +254,7 @@ func (db *RoseDB) Backup(path string) error {
 // RunLogFileGC run log file garbage collection manually.
 func (db *RoseDB) RunLogFileGC(dataType DataType, fid int, gcRatio float64) error {
 	if atomic.LoadInt32(&db.gcState) > 0 {
-		return ErrGCRunning
+		return config.ErrGCRunning
 	}
 	return db.doRunGC(dataType, fid, gcRatio)
 }
@@ -291,8 +273,9 @@ func (db *RoseDB) getArchivedLogFile(dataType DataType, fid uint32) *logfile.Log
 	var lf *logfile.LogFile
 	db.mu.RLock()
 	defer db.mu.RUnlock()
-	if db.archivedLogFiles[dataType] != nil {
-		lf = db.archivedLogFiles[dataType][fid]
+	logFiles := db.archivedLogFiles[dataType]
+	if logFiles != nil {
+		lf = logFiles[fid]
 	}
 	return lf
 }
@@ -304,7 +287,7 @@ func (db *RoseDB) writeLogEntry(ent *logfile.LogEntry, dataType DataType) (*valu
 	}
 	activeLogFile := db.getActiveLogFile(dataType)
 	if activeLogFile == nil {
-		return nil, ErrLogFileNotFound
+		return nil, config.ErrLogFileNotFound
 	}
 
 	opts := db.opts
@@ -315,6 +298,7 @@ func (db *RoseDB) writeLogEntry(ent *logfile.LogEntry, dataType DataType) (*valu
 		}
 
 		db.mu.Lock()
+		defer db.mu.Lock()
 		// save the old log file in archived files.
 		activeFileId := activeLogFile.Fid
 		if db.archivedLogFiles[dataType] == nil {
@@ -326,13 +310,11 @@ func (db *RoseDB) writeLogEntry(ent *logfile.LogEntry, dataType DataType) (*valu
 		ftype, iotype := logfile.FileType(dataType), logfile.IOType(opts.IoType)
 		lf, err := logfile.OpenLogFile(opts.DBPath, activeFileId+1, opts.LogFileSizeThreshold, ftype, iotype)
 		if err != nil {
-			db.mu.Unlock()
 			return nil, err
 		}
 		db.discards[dataType].setTotal(lf.Fid, uint32(opts.LogFileSizeThreshold))
 		db.activeLogFiles[dataType] = lf
 		activeLogFile = lf
-		db.mu.Unlock()
 	}
 
 	writeAt := atomic.LoadInt64(&activeLogFile.WriteAt)
@@ -420,7 +402,7 @@ func (db *RoseDB) initLogFile(dataType DataType) error {
 }
 
 func (db *RoseDB) initDiscard() error {
-	discardPath := filepath.Join(db.opts.DBPath, discardFilePath)
+	discardPath := filepath.Join(db.opts.DBPath, config.DiscardFilePath)
 	if !util.PathExist(discardPath) {
 		if err := os.MkdirAll(discardPath, os.ModePerm); err != nil {
 			return err
@@ -428,7 +410,7 @@ func (db *RoseDB) initDiscard() error {
 	}
 
 	discards := make(map[DataType]*discard)
-	for i := String; i < logFileTypeNum; i++ {
+	for i := String; i < config.LogFileTypeNum; i++ {
 		name := logfile.FileNamesMap[logfile.FileType(i)] + discardFileName
 		dis, err := newDiscard(discardPath, name, db.opts.DiscardBufferSize)
 		if err != nil {
@@ -441,7 +423,7 @@ func (db *RoseDB) initDiscard() error {
 }
 
 func (db *RoseDB) encodeKey(key, subKey []byte) []byte {
-	header := make([]byte, encodeHeaderSize)
+	header := make([]byte, config.EncodeHeaderSize)
 	var index int
 	index += binary.PutVarint(header[index:], int64(len(key)))
 	index += binary.PutVarint(header[index:], int64(len(subKey)))
@@ -497,19 +479,32 @@ func (db *RoseDB) handleLogFileGC() {
 				logger.Warn("log file gc is running, skip it")
 				break
 			}
-			for dType := String; dType < logFileTypeNum; dType++ {
-				go func(dataType DataType) {
-					err := db.doRunGC(dataType, -1, db.opts.LogFileGCRatio)
-					if err != nil {
-						logger.Errorf("log file gc err, dataType: [%v], err: [%v]", dataType, err)
-					}
-				}(dType)
-			}
+			db.doRunGCAsync()
 		case <-quitSig:
 			logger.Infof("db %s exit", db.opts.DBPath)
 			return
 		}
 	}
+}
+
+func (db *RoseDB) doRunGCAsync() {
+	for dType := String; dType < config.LogFileTypeNum; dType++ {
+		go func(dataType DataType) {
+			err := db.doRunGC(dataType, -1, db.opts.LogFileGCRatio)
+			if err != nil {
+				logger.Errorf("log file gc err, dataType: [%v], err: [%v]", dataType, err)
+			}
+		}(dType)
+	}
+}
+
+func (db *RoseDB) doRunGCSync() {
+	for dType := String; dType < config.LogFileTypeNum; dType++ {
+		if err := db.doRunGC(dType, -1, db.opts.LogFileGCRatio); err != nil {
+			logger.Errorf("log file gc err, dataType: [%v], err: [%v]", dType, err)
+		}
+	}
+	logger.Infof("log file gc success")
 }
 
 func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) error {
@@ -679,7 +674,6 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 	if err != nil {
 		return err
 	}
-
 	for _, fid := range ccl {
 		if specifiedFid >= 0 && uint32(specifiedFid) != fid {
 			continue

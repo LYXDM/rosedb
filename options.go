@@ -74,7 +74,7 @@ func DefaultOptions(path string) Options {
 	return Options{
 		DBPath:               path,
 		IndexMode:            KeyOnlyMemMode,
-		IoType:               FileIO,
+		IoType:               MMap,
 		Sync:                 false,
 		LogFileGCInterval:    time.Hour * 8,
 		LogFileGCRatio:       0.5,

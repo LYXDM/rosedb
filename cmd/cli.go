@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/flower-corp/rosedb"
+	"github.com/flower-corp/rosedb/config"
+
 	"github.com/tidwall/redcon"
 )
 
@@ -118,7 +120,7 @@ func execClientCommand(conn redcon.Conn, cmd redcon.Command) {
 		_ = conn.Close()
 	default:
 		if res, err := cmdFunc(cli, cmd.Args[1:]); err != nil {
-			if err == rosedb.ErrKeyNotFound {
+			if err == config.ErrKeyNotFound {
 				conn.WriteNull()
 			} else {
 				conn.WriteError(err.Error())

@@ -4,9 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/flower-corp/rosedb"
-	"github.com/flower-corp/rosedb/logger"
-	"github.com/tidwall/redcon"
 	"io/ioutil"
 	"os"
 	"os/signal"
@@ -14,6 +11,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/tidwall/redcon"
+
+	"github.com/flower-corp/rosedb"
+	"github.com/flower-corp/rosedb/config"
+	"github.com/flower-corp/rosedb/logger"
 )
 
 var (
@@ -63,7 +66,7 @@ func main() {
 	flag.Parse()
 
 	// open a default database
-	path := filepath.Join(serverOpts.dbPath, fmt.Sprintf(dbName, 0))
+	path := filepath.Join(serverOpts.dbPath, fmt.Sprintf(config.DBName, config.DefaultDB))
 	opts := rosedb.DefaultOptions(path)
 	now := time.Now()
 	db, err := rosedb.Open(opts)
