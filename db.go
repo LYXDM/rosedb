@@ -506,6 +506,7 @@ func (db *RoseDB) handleLogFileGC() {
 				}(dType)
 			}
 		case <-quitSig:
+			logger.Infof("db %s exit", db.opts.DBPath)
 			return
 		}
 	}
