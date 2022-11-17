@@ -1,10 +1,10 @@
 package rosedb
 
 import (
-	"github.com/flower-corp/rosedb/config"
 	"github.com/flower-corp/rosedb/ds/art"
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/server"
 	"github.com/flower-corp/rosedb/util"
 )
 
@@ -134,7 +134,7 @@ func (db *RoseDB) SDiff(keys ...[]byte) ([][]byte, error) {
 	db.setIndex.mu.RLock()
 	defer db.setIndex.mu.RUnlock()
 	if len(keys) == 0 {
-		return nil, config.ErrWrongNumberOfArgs
+		return nil, server.ErrWrongNumberOfArgs
 	}
 	if len(keys) == 1 {
 		return db.sMembers(keys[0])
@@ -189,7 +189,7 @@ func (db *RoseDB) SUnion(keys ...[]byte) ([][]byte, error) {
 	defer db.setIndex.mu.RUnlock()
 
 	if len(keys) == 0 {
-		return nil, config.ErrWrongNumberOfArgs
+		return nil, server.ErrWrongNumberOfArgs
 	}
 	if len(keys) == 1 {
 		return db.sMembers(keys[0])
@@ -285,7 +285,7 @@ func (db *RoseDB) SInter(keys ...[]byte) ([][]byte, error) {
 	defer db.setIndex.mu.RUnlock()
 
 	if len(keys) == 0 {
-		return nil, config.ErrWrongNumberOfArgs
+		return nil, server.ErrWrongNumberOfArgs
 	}
 	if len(keys) == 1 {
 		return db.sMembers(keys[0])

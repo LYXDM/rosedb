@@ -1,4 +1,4 @@
-package config
+package server
 
 import (
 	"math"
@@ -10,6 +10,6 @@ const (
 	InitialListSeq   = math.MaxUint32 / 2
 	DiscardFilePath  = "DISCARD"
 	LockFileName     = "FLOCK"
-	DBName = "rosedb-%04d"
-	DefaultDB = 0
+	DBName           = "rosedb-%04d"
+	DefaultDB        = 0
 )

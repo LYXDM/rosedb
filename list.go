@@ -3,10 +3,10 @@ package rosedb
 import (
 	"bytes"
 	"encoding/binary"
-	"github.com/flower-corp/rosedb/config"
 	"github.com/flower-corp/rosedb/ds/art"
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/server"
 	"math"
 )
 
@@ -35,7 +35,7 @@ func (db *RoseDB) LPushX(key []byte, values ...[]byte) error {
 	defer db.listIndex.mu.Unlock()
 
 	if db.listIndex.trees[string(key)] == nil {
-		return config.ErrKeyNotFound
+		return server.ErrKeyNotFound
 	}
 
 	for _, val := range values {
@@ -71,7 +71,7 @@ func (db *RoseDB) RPushX(key []byte, values ...[]byte) error {
 	defer db.listIndex.mu.Unlock()
 
 	if db.listIndex.trees[string(key)] == nil {
-		return config.ErrKeyNotFound
+		return server.ErrKeyNotFound
 	}
 	for _, val := range values {
 		if err := db.pushInternal(key, val, false); err != nil {
@@ -157,7 +157,7 @@ func (db *RoseDB) LIndex(key []byte, index int) ([]byte, error) {
 	}
 
 	if seq >= tailSeq || seq <= headSeq {
-		return nil, config.ErrWrongIndex
+		return nil, server.ErrWrongIndex
 	}
 
 	encKey := db.encodeListKey(key, seq)
@@ -174,7 +174,7 @@ func (db *RoseDB) LSet(key []byte, index int, value []byte) error {
 	defer db.listIndex.mu.Unlock()
 
 	if db.listIndex.trees[string(key)] == nil {
-		return config.ErrKeyNotFound
+		return server.ErrKeyNotFound
 	}
 	idxTree := db.listIndex.trees[string(key)]
 	headSeq, tailSeq, err := db.listMeta(idxTree, key)
@@ -188,7 +188,7 @@ func (db *RoseDB) LSet(key []byte, index int, value []byte) error {
 	}
 
 	if seq >= tailSeq || seq <= headSeq {
-		return config.ErrWrongIndex
+		return server.ErrWrongIndex
 	}
 
 	encKey := db.encodeListKey(key, seq)
@@ -215,7 +215,7 @@ func (db *RoseDB) LRange(key []byte, start, end int) (values [][]byte, err error
 	defer db.listIndex.mu.RUnlock()
 
 	if db.listIndex.trees[string(key)] == nil {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 
 	idxTree := db.listIndex.trees[string(key)]
@@ -247,7 +247,7 @@ func (db *RoseDB) LRange(key []byte, start, end int) (values [][]byte, err error
 	}
 
 	if startSeq >= tailSeq || endSeq <= headSeq || startSeq > endSeq {
-		return nil, config.ErrWrongIndex
+		return nil, server.ErrWrongIndex
 	}
 
 	// the endSeq value is included
@@ -279,12 +279,12 @@ func (db *RoseDB) decodeListKey(buf []byte) ([]byte, uint32) {
 
 func (db *RoseDB) listMeta(idxTree *art.AdaptiveRadixTree, key []byte) (uint32, uint32, error) {
 	val, err := db.getVal(idxTree, key, List)
-	if err != nil && err != config.ErrKeyNotFound {
+	if err != nil && err != server.ErrKeyNotFound {
 		return 0, 0, err
 	}
 
-	var headSeq uint32 = config.InitialListSeq
-	var tailSeq uint32 = config.InitialListSeq + 1
+	var headSeq uint32 = server.InitialListSeq
+	var tailSeq uint32 = server.InitialListSeq + 1
 	if len(val) != 0 {
 		headSeq = binary.LittleEndian.Uint32(val[:4])
 		tailSeq = binary.LittleEndian.Uint32(val[4:8])
@@ -383,9 +383,9 @@ func (db *RoseDB) popInternal(key []byte, isLeft bool) ([]byte, error) {
 	}
 	if tailSeq-headSeq-1 == 0 {
 		// reset meta
-		if headSeq != config.InitialListSeq || tailSeq != config.InitialListSeq+1 {
-			headSeq = config.InitialListSeq
-			tailSeq = config.InitialListSeq + 1
+		if headSeq != server.InitialListSeq || tailSeq != server.InitialListSeq+1 {
+			headSeq = server.InitialListSeq
+			tailSeq = server.InitialListSeq + 1
 			_ = db.saveListMeta(idxTree, key, headSeq, tailSeq)
 		}
 		delete(db.listIndex.trees, string(key))

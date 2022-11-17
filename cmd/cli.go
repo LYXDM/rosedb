@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/flower-corp/rosedb"
-	"github.com/flower-corp/rosedb/config"
+	"github.com/flower-corp/rosedb/server"
 
 	"github.com/tidwall/redcon"
 )
@@ -112,7 +112,7 @@ func execClientCommand(conn redcon.Conn, cmd redcon.Command) {
 
 	cli, _ := conn.Context().(*Client)
 	if cli == nil {
-		conn.WriteError(errClientIsNil.Error())
+		conn.WriteError(server.ErrClientIsNil.Error())
 		return
 	}
 	switch command {
@@ -120,7 +120,7 @@ func execClientCommand(conn redcon.Conn, cmd redcon.Command) {
 		_ = conn.Close()
 	default:
 		if res, err := cmdFunc(cli, cmd.Args[1:]); err != nil {
-			if err == config.ErrKeyNotFound {
+			if err == server.ErrKeyNotFound {
 				conn.WriteNull()
 			} else {
 				conn.WriteError(err.Error())

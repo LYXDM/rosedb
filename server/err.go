@@ -1,10 +1,12 @@
-package config
+package server
 
 import (
 	"errors"
 )
 
 var (
+	ErrClientIsNil = errors.New("ERR client conn is nil")
+
 	// ErrKeyNotFound key not found
 	ErrKeyNotFound = errors.New("key not found")
 

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/flower-corp/rosedb"
-	"github.com/flower-corp/rosedb/config"
+	"github.com/flower-corp/rosedb/server"
 	"github.com/flower-corp/rosedb/util"
 	"github.com/tidwall/redcon"
 	"path/filepath"
@@ -58,8 +58,8 @@ func selectDB(cli *Client, args [][]byte) (interface{}, error) {
 
 	db := cli.svr.dbs[n]
 	if db == nil {
-		path := filepath.Join(cli.svr.opts.dbPath, fmt.Sprintf(config.DBName, config.DefaultDB))
-		opts := rosedb.DefaultOptions(path)
+		path := filepath.Join(cli.svr.opts.dbPath, fmt.Sprintf(server.DBName, server.DefaultDB))
+		opts := rosedb.DefaultOptions(server.DBConfig, path)
 		newdb, err := rosedb.Open(opts)
 		if err != nil {
 			return nil, err

@@ -3,9 +3,9 @@ package rosedb
 import (
 	"bytes"
 	"errors"
-	"github.com/flower-corp/rosedb/config"
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/server"
 	"github.com/flower-corp/rosedb/util"
 	"math"
 	"regexp"
@@ -45,12 +45,12 @@ func (db *RoseDB) MGet(keys [][]byte) ([][]byte, error) {
 	defer db.strIndex.mu.RUnlock()
 
 	if len(keys) == 0 {
-		return nil, config.ErrWrongNumberOfArgs
+		return nil, server.ErrWrongNumberOfArgs
 	}
 	values := make([][]byte, len(keys))
 	for i, key := range keys {
 		val, err := db.getVal(db.strIndex.idxTree, key, String)
-		if err != nil && !errors.Is(config.ErrKeyNotFound, err) {
+		if err != nil && !errors.Is(server.ErrKeyNotFound, err) {
 			return nil, err
 		}
 		values[i] = val
@@ -103,7 +103,7 @@ func (db *RoseDB) GetDel(key []byte) ([]byte, error) {
 	defer db.strIndex.mu.Unlock()
 
 	val, err := db.getVal(db.strIndex.idxTree, key, String)
-	if err != nil && err != config.ErrKeyNotFound {
+	if err != nil && err != server.ErrKeyNotFound {
 		return nil, err
 	}
 	if val == nil {
@@ -172,7 +172,7 @@ func (db *RoseDB) SetNX(key, value []byte) error {
 	defer db.strIndex.mu.Unlock()
 
 	val, err := db.getVal(db.strIndex.idxTree, key, String)
-	if err != nil && !errors.Is(err, config.ErrKeyNotFound) {
+	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return err
 	}
 	// Key exists in db.
@@ -195,7 +195,7 @@ func (db *RoseDB) MSet(args ...[]byte) error {
 	defer db.strIndex.mu.Unlock()
 
 	if len(args) == 0 || len(args)%2 != 0 {
-		return config.ErrWrongNumberOfArgs
+		return server.ErrWrongNumberOfArgs
 	}
 
 	// Add multiple key-value pairs.
@@ -221,14 +221,14 @@ func (db *RoseDB) MSetNX(args ...[]byte) error {
 	defer db.strIndex.mu.Unlock()
 
 	if len(args) == 0 || len(args)%2 != 0 {
-		return config.ErrWrongNumberOfArgs
+		return server.ErrWrongNumberOfArgs
 	}
 
 	// Firstly, check each keys whether they are exists.
 	for i := 0; i < len(args); i += 2 {
 		key := args[i]
 		val, err := db.getVal(db.strIndex.idxTree, key, String)
-		if err != nil && !errors.Is(err, config.ErrKeyNotFound) {
+		if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 			return err
 		}
 
@@ -268,7 +268,7 @@ func (db *RoseDB) Append(key, value []byte) error {
 	defer db.strIndex.mu.Unlock()
 
 	oldVal, err := db.getVal(db.strIndex.idxTree, key, String)
-	if err != nil && !errors.Is(err, config.ErrKeyNotFound) {
+	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return err
 	}
 
@@ -329,7 +329,7 @@ func (db *RoseDB) IncrBy(key []byte, incr int64) (int64, error) {
 // incrDecrBy is a helper method for Incr, IncrBy, Decr, and DecrBy methods. It updates the key by incr.
 func (db *RoseDB) incrDecrBy(key []byte, incr int64) (int64, error) {
 	val, err := db.getVal(db.strIndex.idxTree, key, String)
-	if err != nil && !errors.Is(err, config.ErrKeyNotFound) {
+	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return 0, err
 	}
 	if bytes.Equal(val, nil) {
@@ -337,12 +337,12 @@ func (db *RoseDB) incrDecrBy(key []byte, incr int64) (int64, error) {
 	}
 	valInt64, err := strconv.ParseInt(string(val), 10, 64)
 	if err != nil {
-		return 0, config.ErrWrongValueType
+		return 0, server.ErrWrongValueType
 	}
 
 	if (incr < 0 && valInt64 < 0 && incr < (math.MinInt64-valInt64)) ||
 		(incr > 0 && valInt64 > 0 && incr > (math.MaxInt64-valInt64)) {
-		return 0, config.ErrIntegerOverflow
+		return 0, server.ErrIntegerOverflow
 	}
 
 	valInt64 += incr
@@ -416,10 +416,10 @@ func (db *RoseDB) Scan(prefix []byte, pattern string, count int) ([][]byte, erro
 			continue
 		}
 		val, err := db.getVal(db.strIndex.idxTree, key, String)
-		if err != nil && err != config.ErrKeyNotFound {
+		if err != nil && err != server.ErrKeyNotFound {
 			return nil, err
 		}
-		if err != config.ErrKeyNotFound {
+		if err != server.ErrKeyNotFound {
 			results = append(results, key, val)
 		}
 	}

@@ -1,9 +1,14 @@
 package rosedb
 
-import "time"
+import (
+	"strconv"
+	"time"
+
+	"github.com/flower-corp/rosedb/server"
+)
 
 // DataIndexMode the data index mode.
-type DataIndexMode int
+type DataIndexMode int8
 
 const (
 	// KeyValueMemMode key and value are both in memory, read operation will be very fast in this mode.
@@ -70,15 +75,19 @@ type Options struct {
 }
 
 // DefaultOptions default options for opening a RoseDB.
-func DefaultOptions(path string) Options {
+func DefaultOptions(cfg server.Config, dbPath string) Options {
+	ratio := 0.5
+	if v, err := strconv.ParseFloat(cfg.LogFileGCRatio, 64); err == nil {
+		ratio = v
+	}
 	return Options{
-		DBPath:               path,
-		IndexMode:            KeyOnlyMemMode,
-		IoType:               MMap,
-		Sync:                 false,
-		LogFileGCInterval:    time.Hour * 8,
-		LogFileGCRatio:       0.5,
-		LogFileSizeThreshold: 512 << 20,
-		DiscardBufferSize:    8 << 20,
+		DBPath:               dbPath,
+		IndexMode:            DataIndexMode(cfg.IndexMode),
+		IoType:               IOType(cfg.IoType),
+		Sync:                 cfg.Sync,
+		LogFileGCInterval:    time.Second * time.Duration(cfg.LogFileGCInterval),
+		LogFileGCRatio:       ratio,
+		LogFileSizeThreshold: 512 << 20, //不对外可设置
+		DiscardBufferSize:    8 << 20,   //不对外可设置
 	}
 }

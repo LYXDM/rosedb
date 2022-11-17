@@ -1,8 +1,6 @@
 package main
 
 import (
-	"errors"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -15,23 +13,8 @@ import (
 	"github.com/tidwall/redcon"
 
 	"github.com/flower-corp/rosedb"
-	"github.com/flower-corp/rosedb/config"
 	"github.com/flower-corp/rosedb/logger"
-)
-
-var (
-	errClientIsNil = errors.New("ERR client conn is nil")
-)
-
-var (
-	defaultDBPath            = filepath.Join("/tmp", "rosedb")
-	defaultHost              = "127.0.0.1"
-	defaultPort              = "5200"
-	defaultDatabasesNum uint = 16
-)
-
-const (
-	dbName = "rosedb-%04d"
+	"github.com/flower-corp/rosedb/server"
 )
 
 func init() {
@@ -57,17 +40,19 @@ type ServerOptions struct {
 }
 
 func main() {
-	// init server options
-	serverOpts := new(ServerOptions)
-	flag.StringVar(&serverOpts.dbPath, "dbpath", defaultDBPath, "db path")
-	flag.StringVar(&serverOpts.host, "host", defaultHost, "server host")
-	flag.StringVar(&serverOpts.port, "port", defaultPort, "server port")
-	flag.UintVar(&serverOpts.databases, "databases", defaultDatabasesNum, "the number of databases")
-	flag.Parse()
+	var RoseCfg server.RoseDBCfg
+	server.NewConfigToml("rose.toml", &RoseCfg)
+
+	serverOpts := &ServerOptions{
+		dbPath:    RoseCfg.RoseConfig.DBFilePath,
+		host:      RoseCfg.RoseConfig.Host,
+		port:      RoseCfg.RoseConfig.Port,
+		databases: uint(RoseCfg.RoseConfig.DataBasesNum),
+	}
 
 	// open a default database
-	path := filepath.Join(serverOpts.dbPath, fmt.Sprintf(config.DBName, config.DefaultDB))
-	opts := rosedb.DefaultOptions(path)
+	path := filepath.Join(serverOpts.dbPath, fmt.Sprintf(server.DBName, server.DefaultDB))
+	opts := rosedb.DefaultOptions(RoseCfg.RoseConfig, path)
 	now := time.Now()
 	db, err := rosedb.Open(opts)
 	if err != nil {

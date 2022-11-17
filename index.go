@@ -1,10 +1,10 @@
 package rosedb
 
 import (
-	"github.com/flower-corp/rosedb/config"
 	"github.com/flower-corp/rosedb/ds/art"
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/server"
 	"github.com/flower-corp/rosedb/util"
 	"io"
 	"sort"
@@ -212,8 +212,8 @@ func (db *RoseDB) loadIndexFromLogFiles() error {
 	}
 
 	wg := new(sync.WaitGroup)
-	wg.Add(config.LogFileTypeNum)
-	for i := 0; i < config.LogFileTypeNum; i++ {
+	wg.Add(server.LogFileTypeNum)
+	for i := 0; i < server.LogFileTypeNum; i++ {
 		go iterateAndHandle(DataType(i), wg)
 	}
 	wg.Wait()
@@ -247,11 +247,11 @@ func (db *RoseDB) updateIndexTree(idxTree *art.AdaptiveRadixTree,
 func (db *RoseDB) getIndexNode(idxTree *art.AdaptiveRadixTree, key []byte) (*indexNode, error) {
 	rawValue := idxTree.Get(key)
 	if rawValue == nil {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 	idxNode, _ := rawValue.(*indexNode)
 	if idxNode == nil {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 	return idxNode, nil
 }
@@ -262,16 +262,16 @@ func (db *RoseDB) getVal(idxTree *art.AdaptiveRadixTree,
 	// Get index info from an adaptive radix tree in memory.
 	rawValue := idxTree.Get(key)
 	if rawValue == nil {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 	idxNode, _ := rawValue.(*indexNode)
 	if idxNode == nil {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 
 	ts := time.Now().Unix()
 	if idxNode.expiredAt != 0 && idxNode.expiredAt <= ts {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 	// In KeyValueMemMode, the value will be stored in memory.
 	// So get the value from the index info.
@@ -285,7 +285,7 @@ func (db *RoseDB) getVal(idxTree *art.AdaptiveRadixTree,
 		logFile = db.getArchivedLogFile(dataType, idxNode.fid)
 	}
 	if logFile == nil {
-		return nil, config.ErrLogFileNotFound
+		return nil, server.ErrLogFileNotFound
 	}
 
 	ent, _, err := logFile.ReadLogEntry(idxNode.offset)
@@ -294,7 +294,7 @@ func (db *RoseDB) getVal(idxTree *art.AdaptiveRadixTree,
 	}
 	// key exists, but is invalid(deleted or expired)
 	if ent.Type == logfile.TypeDelete || (ent.ExpiredAt != 0 && ent.ExpiredAt < ts) {
-		return nil, config.ErrKeyNotFound
+		return nil, server.ErrKeyNotFound
 	}
 	return ent.Value, nil
 }
