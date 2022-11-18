@@ -84,10 +84,7 @@ func (db *RoseDB) buildListIndex(ent *logfile.LogEntry, pos *valuePos) {
 
 func (db *RoseDB) buildHashIndex(ent *logfile.LogEntry, pos *valuePos) {
 	key, field := db.decodeKey(ent.Key)
-	if db.hashIndex.trees[string(key)] == nil {
-		db.hashIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.hashIndex.trees[string(key)]
+	idxTree := db.hashIndex.GetTreeWithNew(key)
 
 	if ent.Type == logfile.TypeDelete {
 		idxTree.Delete(field)
@@ -106,10 +103,7 @@ func (db *RoseDB) buildHashIndex(ent *logfile.LogEntry, pos *valuePos) {
 }
 
 func (db *RoseDB) buildSetsIndex(ent *logfile.LogEntry, pos *valuePos) {
-	if db.setIndex.trees[string(ent.Key)] == nil {
-		db.setIndex.trees[string(ent.Key)] = art.NewART()
-	}
-	idxTree := db.setIndex.trees[string(ent.Key)]
+	idxTree := db.setIndex.GetTreeWithNew(ent.Key)
 
 	if ent.Type == logfile.TypeDelete {
 		idxTree.Delete(ent.Value)
@@ -136,8 +130,9 @@ func (db *RoseDB) buildSetsIndex(ent *logfile.LogEntry, pos *valuePos) {
 func (db *RoseDB) buildZSetIndex(ent *logfile.LogEntry, pos *valuePos) {
 	if ent.Type == logfile.TypeDelete {
 		db.zsetIndex.indexes.ZRem(string(ent.Key), string(ent.Value))
-		if db.zsetIndex.trees[string(ent.Key)] != nil {
-			db.zsetIndex.trees[string(ent.Key)].Delete(ent.Value)
+
+		if db.zsetIndex.GetTree(ent.Key) != nil {
+			db.zsetIndex.GetTree(ent.Key).Delete(ent.Value)
 		}
 		return
 	}
@@ -150,11 +145,7 @@ func (db *RoseDB) buildZSetIndex(ent *logfile.LogEntry, pos *valuePos) {
 	sum := db.zsetIndex.murhash.EncodeSum128()
 	db.zsetIndex.murhash.Reset()
 
-	idxTree := db.zsetIndex.trees[string(key)]
-	if idxTree == nil {
-		idxTree = art.NewART()
-		db.zsetIndex.trees[string(key)] = idxTree
-	}
+	idxTree := db.zsetIndex.GetTreeWithNew(key)
 
 	_, size := logfile.EncodeEntry(ent)
 	idxNode := &indexNode{fid: pos.fid, offset: pos.offset, entrySize: size}
@@ -220,7 +211,7 @@ func (db *RoseDB) loadIndexFromLogFiles() error {
 	return nil
 }
 
-func (db *RoseDB) updateIndexTree(idxTree *art.AdaptiveRadixTree,
+func (db *RoseDB) updateIndexTree(idxTree art.RadixTreeInterface,
 	ent *logfile.LogEntry, pos *valuePos, sendDiscard bool, dType DataType) error {
 
 	var size = pos.entrySize
@@ -235,7 +226,6 @@ func (db *RoseDB) updateIndexTree(idxTree *art.AdaptiveRadixTree,
 	if ent.ExpiredAt != 0 {
 		idxNode.expiredAt = ent.ExpiredAt
 	}
-
 	oldVal, updated := idxTree.Put(ent.Key, idxNode)
 	if sendDiscard {
 		db.sendDiscard(oldVal, updated, dType)
@@ -256,7 +246,7 @@ func (db *RoseDB) getIndexNode(idxTree *art.AdaptiveRadixTree, key []byte) (*ind
 	return idxNode, nil
 }
 
-func (db *RoseDB) getVal(idxTree *art.AdaptiveRadixTree,
+func (db *RoseDB) getVal(idxTree art.RadixTreeInterface,
 	key []byte, dataType DataType) ([]byte, error) {
 
 	// Get index info from an adaptive radix tree in memory.

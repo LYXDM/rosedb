@@ -4,6 +4,15 @@ import (
 	goart "github.com/plar/go-adaptive-radix-tree"
 )
 
+type RadixTreeInterface interface {
+	Put(key []byte, value interface{}) (oldVal interface{}, updated bool)
+	Get(key []byte) interface{}
+	Delete(key []byte) (val interface{}, updated bool)
+	Iterator() goart.Iterator
+	PrefixScan(prefix []byte, count int) (keys [][]byte)
+	Size() int
+}
+
 type AdaptiveRadixTree struct {
 	tree goart.Tree
 }
@@ -54,4 +63,17 @@ func (art *AdaptiveRadixTree) PrefixScan(prefix []byte, count int) (keys [][]byt
 
 func (art *AdaptiveRadixTree) Size() int {
 	return art.tree.Size()
+}
+
+//tree with expire timeStamp
+type AdaptiveRadixTreeExpire struct {
+	AdaptiveRadixTree
+	ExpireAt int64
+}
+
+func NewARTExpire() *AdaptiveRadixTreeExpire {
+	return &AdaptiveRadixTreeExpire{
+		AdaptiveRadixTree: *NewART(),
+		//ExpireAt:          0,
+	}
 }

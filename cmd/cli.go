@@ -85,8 +85,9 @@ var supportedCommands = map[string]cmdHandler{
 	"zrevrank":  zRevRank,
 
 	// generic commands
-	"type": keyType,
-	"del":  del,
+	"expire": Expires,
+	"type":   keyType,
+	"del":    del,
 
 	// connection management commands
 	"select": selectDB,

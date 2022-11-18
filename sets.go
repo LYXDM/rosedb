@@ -1,7 +1,8 @@
 package rosedb
 
 import (
-	"github.com/flower-corp/rosedb/ds/art"
+	"time"
+
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
 	"github.com/flower-corp/rosedb/server"
@@ -11,14 +12,11 @@ import (
 // SAdd add the specified members to the set stored at key.
 // Specified members that are already a member of this set are ignored.
 // If key does not exist, a new set is created before adding the specified members.
-func (db *RoseDB) SAdd(key []byte, members ...[]byte) error {
+func (db *RoseDB) SAdd(expireAt int64, key []byte, members ...[]byte) error {
 	db.setIndex.mu.Lock()
 	defer db.setIndex.mu.Unlock()
 
-	if db.setIndex.trees[string(key)] == nil {
-		db.setIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.setIndex.trees[string(key)]
+	idxTree := db.setIndex.GetTreeWithNew(key)
 	for _, mem := range members {
 		if len(mem) == 0 {
 			continue
@@ -29,7 +27,7 @@ func (db *RoseDB) SAdd(key []byte, members ...[]byte) error {
 		sum := db.setIndex.murhash.EncodeSum128()
 		db.setIndex.murhash.Reset()
 
-		ent := &logfile.LogEntry{Key: key, Value: mem}
+		ent := &logfile.LogEntry{Key: key, Value: mem, ExpiredAt: expireAt}
 		valuePos, err := db.writeLogEntry(ent, Set)
 		if err != nil {
 			return err
@@ -48,11 +46,10 @@ func (db *RoseDB) SAdd(key []byte, members ...[]byte) error {
 func (db *RoseDB) SPop(key []byte, count uint) ([][]byte, error) {
 	db.setIndex.mu.Lock()
 	defer db.setIndex.mu.Unlock()
-	if db.setIndex.trees[string(key)] == nil {
+	idxTree := db.setIndex.GetTree(key)
+	if idxTree == nil {
 		return nil, nil
 	}
-	idxTree := db.setIndex.trees[string(key)]
-
 	var values [][]byte
 	iter := idxTree.Iterator()
 	for iter.HasNext() && count > 0 {
@@ -75,6 +72,32 @@ func (db *RoseDB) SPop(key []byte, count uint) ([][]byte, error) {
 	return values, nil
 }
 
+func (db *RoseDB) SExpires(key []byte, expire time.Duration) error {
+	db.setIndex.mu.Lock()
+	idxTree := db.setIndex.GetTree(key)
+	db.setIndex.mu.Unlock()
+	if idxTree == nil {
+		return nil
+	}
+	iter := idxTree.Iterator()
+	var values [][]byte
+	for iter.HasNext() {
+		node, err := iter.Next()
+		if err != nil || node == nil {
+			continue
+		}
+		val, err := db.getVal(idxTree, node.Key(), Set)
+		if err != nil {
+			return err
+		}
+		values = append(values, val)
+	}
+	expireAt := time.Now().Add(expire).Unix()
+	db.SAdd(expireAt, key, values...)
+	idxTree.ExpireAt = expireAt
+	return nil
+}
+
 // SRem remove the specified members from the set stored at key.
 // Specified members that are not a member of this set are ignored.
 // If key does not exist, it is treated as an empty set and this command returns 0.
@@ -82,7 +105,7 @@ func (db *RoseDB) SRem(key []byte, members ...[]byte) error {
 	db.setIndex.mu.Lock()
 	defer db.setIndex.mu.Unlock()
 
-	if db.setIndex.trees[string(key)] == nil {
+	if db.setIndex.GetTree(key) == nil {
 		return nil
 	}
 	for _, mem := range members {
@@ -97,11 +120,10 @@ func (db *RoseDB) SRem(key []byte, members ...[]byte) error {
 func (db *RoseDB) SIsMember(key, member []byte) bool {
 	db.setIndex.mu.RLock()
 	defer db.setIndex.mu.RUnlock()
-
-	if db.setIndex.trees[string(key)] == nil {
+	idxTree := db.setIndex.GetTree(key)
+	if idxTree == nil {
 		return false
 	}
-	idxTree := db.setIndex.trees[string(key)]
 	if err := db.setIndex.murhash.Write(member); err != nil {
 		return false
 	}
@@ -122,10 +144,11 @@ func (db *RoseDB) SMembers(key []byte) ([][]byte, error) {
 func (db *RoseDB) SCard(key []byte) int {
 	db.setIndex.mu.RLock()
 	defer db.setIndex.mu.RUnlock()
-	if db.setIndex.trees[string(key)] == nil {
+	idxTree := db.setIndex.GetTree(key)
+	if idxTree == nil {
 		return 0
 	}
-	return db.setIndex.trees[string(key)].Size()
+	return idxTree.Size()
 }
 
 // SDiff returns the members of the set difference between the first set and
@@ -227,7 +250,7 @@ func (db *RoseDB) SUnionStore(keys ...[]byte) (int, error) {
 }
 
 func (db *RoseDB) sremInternal(key []byte, member []byte) error {
-	idxTree := db.setIndex.trees[string(key)]
+	idxTree := db.setIndex.GetTree(key)
 	if err := db.setIndex.murhash.Write(member); err != nil {
 		return err
 	}
@@ -258,12 +281,12 @@ func (db *RoseDB) sremInternal(key []byte, member []byte) error {
 
 // sMembers is a helper method to get all members of the given set key.
 func (db *RoseDB) sMembers(key []byte) ([][]byte, error) {
-	if db.setIndex.trees[string(key)] == nil {
+	idxTree := db.setIndex.GetTree(key)
+	if idxTree == nil {
 		return nil, nil
 	}
 
 	var values [][]byte
-	idxTree := db.setIndex.trees[string(key)]
 	iterator := idxTree.Iterator()
 	for iterator.HasNext() {
 		node, _ := iterator.Next()
@@ -327,7 +350,7 @@ func (db *RoseDB) SInterStore(keys ...[]byte) (int, error) {
 func (db *RoseDB) sStore(destination []byte, vals [][]byte) error {
 	for _, val := range vals {
 		if isMember := db.SIsMember(destination, val); !isMember {
-			if err := db.SAdd(destination, val); err != nil {
+			if err := db.SAdd(0, destination, val); err != nil {
 				return err
 			}
 		}

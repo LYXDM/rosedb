@@ -1,14 +1,15 @@
 package rosedb
 
 import (
-	"github.com/flower-corp/rosedb/ds/art"
+	"time"
+
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
 	"github.com/flower-corp/rosedb/util"
 )
 
 // ZAdd adds the specified member with the specified score to the sorted set stored at key.
-func (db *RoseDB) ZAdd(key []byte, score float64, member []byte) error {
+func (db *RoseDB) ZAdd(key []byte, score float64, member []byte, expireAt int64) error {
 	db.zsetIndex.mu.Lock()
 	defer db.zsetIndex.mu.Unlock()
 
@@ -17,14 +18,11 @@ func (db *RoseDB) ZAdd(key []byte, score float64, member []byte) error {
 	}
 	sum := db.zsetIndex.murhash.EncodeSum128()
 	db.zsetIndex.murhash.Reset()
-	if db.zsetIndex.trees[string(key)] == nil {
-		db.zsetIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.zsetIndex.trees[string(key)]
+	idxTree := db.zsetIndex.GetTreeWithNew(key)
 
 	scoreBuf := []byte(util.Float64ToStr(score))
 	zsetKey := db.encodeKey(key, scoreBuf)
-	entry := &logfile.LogEntry{Key: zsetKey, Value: member}
+	entry := &logfile.LogEntry{Key: zsetKey, Value: member, ExpiredAt:expireAt}
 	pos, err := db.writeLogEntry(entry, ZSet)
 	if err != nil {
 		return err
@@ -53,6 +51,34 @@ func (db *RoseDB) ZScore(key, member []byte) (ok bool, score float64) {
 	return db.zsetIndex.indexes.ZScore(string(key), string(sum))
 }
 
+func (db *RoseDB) ZExpires(key []byte, expire time.Duration) error {
+	db.zsetIndex.mu.Lock()
+	idxTree := db.zsetIndex.GetTreeWithNew(key)
+	db.zsetIndex.mu.Unlock()
+	if idxTree == nil {
+		return nil
+	}
+	iter := idxTree.Iterator()
+	expireAt := time.Now().Add(expire).Unix()
+	for iter.HasNext() {
+		node, err :=  iter.Next()
+		if node == nil || err != nil {
+			continue
+		}
+		val, err := db.getVal(idxTree, node.Key(), ZSet)
+		if err != nil {
+			return nil
+		}
+		ok, score := db.ZScore(key, val)
+		if !ok {
+			continue
+		}
+		db.ZAdd(key, score, val, expireAt)
+	}
+	idxTree.ExpireAt = expireAt
+	return nil
+}
+
 // ZRem removes the specified members from the sorted set stored at key. Non existing members are ignored.
 // An error is returned when key exists and does not hold a sorted set.
 func (db *RoseDB) ZRem(key, member []byte) error {
@@ -70,10 +96,7 @@ func (db *RoseDB) ZRem(key, member []byte) error {
 		return nil
 	}
 
-	if db.zsetIndex.trees[string(key)] == nil {
-		db.zsetIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.zsetIndex.trees[string(key)]
+	idxTree := db.zsetIndex.GetTreeWithNew(key)
 
 	oldVal, deleted := idxTree.Delete(sum)
 	db.sendDiscard(oldVal, deleted, ZSet)
@@ -127,10 +150,7 @@ func (db *RoseDB) ZRevRank(key []byte, member []byte) (ok bool, rank int) {
 func (db *RoseDB) zRangeInternal(key []byte, start, stop int, rev bool) ([][]byte, error) {
 	db.zsetIndex.mu.RLock()
 	defer db.zsetIndex.mu.RUnlock()
-	if db.zsetIndex.trees[string(key)] == nil {
-		db.zsetIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.zsetIndex.trees[string(key)]
+	idxTree := db.zsetIndex.GetTreeWithNew(key)
 
 	var res [][]byte
 	var values []interface{}
@@ -153,7 +173,7 @@ func (db *RoseDB) zRangeInternal(key []byte, start, stop int, rev bool) ([][]byt
 func (db *RoseDB) zRankInternal(key []byte, member []byte, rev bool) (ok bool, rank int) {
 	db.zsetIndex.mu.RLock()
 	defer db.zsetIndex.mu.RUnlock()
-	if db.zsetIndex.trees[string(key)] == nil {
+	if db.zsetIndex.GetTree(key) == nil {
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 	"github.com/flower-corp/rosedb/logger"
 	"github.com/flower-corp/rosedb/server"
 	"math"
+	"time"
 )
 
 // LPush insert all the specified values at the head of the list stored at key.
@@ -292,11 +293,11 @@ func (db *RoseDB) listMeta(idxTree *art.AdaptiveRadixTree, key []byte) (uint32, 
 	return headSeq, tailSeq, nil
 }
 
-func (db *RoseDB) saveListMeta(idxTree *art.AdaptiveRadixTree, key []byte, headSeq, tailSeq uint32) error {
+func (db *RoseDB) saveListMeta(idxTree *art.AdaptiveRadixTree, key []byte, headSeq, tailSeq uint32, expireAt int64) error {
 	buf := make([]byte, 8)
 	binary.LittleEndian.PutUint32(buf[:4], headSeq)
 	binary.LittleEndian.PutUint32(buf[4:8], tailSeq)
-	ent := &logfile.LogEntry{Key: key, Value: buf, Type: logfile.TypeListMeta}
+	ent := &logfile.LogEntry{Key: key, Value: buf, ExpiredAt: expireAt, Type: logfile.TypeListMeta}
 	pos, err := db.writeLogEntry(ent, List)
 	if err != nil {
 		return err
@@ -331,7 +332,7 @@ func (db *RoseDB) pushInternal(key []byte, val []byte, isLeft bool) error {
 	} else {
 		tailSeq++
 	}
-	err = db.saveListMeta(idxTree, key, headSeq, tailSeq)
+	err = db.saveListMeta(idxTree, key, headSeq, tailSeq, 0)
 	return err
 }
 
@@ -369,7 +370,7 @@ func (db *RoseDB) popInternal(key []byte, isLeft bool) ([]byte, error) {
 	} else {
 		tailSeq--
 	}
-	if err = db.saveListMeta(idxTree, key, headSeq, tailSeq); err != nil {
+	if err = db.saveListMeta(idxTree, key, headSeq, tailSeq, 0); err != nil {
 		return nil, err
 	}
 	// send discard
@@ -386,7 +387,7 @@ func (db *RoseDB) popInternal(key []byte, isLeft bool) ([]byte, error) {
 		if headSeq != server.InitialListSeq || tailSeq != server.InitialListSeq+1 {
 			headSeq = server.InitialListSeq
 			tailSeq = server.InitialListSeq + 1
-			_ = db.saveListMeta(idxTree, key, headSeq, tailSeq)
+			_ = db.saveListMeta(idxTree, key, headSeq, tailSeq, 0)
 		}
 		delete(db.listIndex.trees, string(key))
 	}
@@ -518,4 +519,45 @@ func (db *RoseDB) LRem(key []byte, count int, value []byte) (int, error) {
 		}
 	}
 	return discardCount, nil
+}
+
+//how to expires list
+func (db *RoseDB) LExpires(key []byte, expire time.Duration) error {
+	db.listIndex.mu.Lock()
+	defer db.listIndex.mu.Unlock()
+
+	idxTree := db.listIndex.trees[string(key)]
+	if idxTree == nil {
+		return server.ErrKeyNotFound
+	}
+	// get List DataType meta info
+	headSeq, tailSeq, err := db.listMeta(idxTree, key)
+	if err != nil {
+		return err
+	}
+	expireAt := time.Now().Add(expire).Unix()
+	_, tailSeqCopy := headSeq, tailSeq
+	for seq := headSeq; seq <= tailSeqCopy; seq++ {
+		encKey := db.encodeListKey(key, seq)
+		val, err := db.getVal(idxTree, encKey, List)
+		if err != nil {
+			continue
+		}
+
+		//add new node
+		ent := &logfile.LogEntry{
+			Key:       encKey,
+			Value:     val,
+			ExpiredAt: expireAt,
+		}
+		pos, err := db.writeLogEntry(ent, List)
+		if err != nil {
+			continue
+		}
+		if err = db.updateIndexTree(idxTree, ent, pos, true, List); err != nil {
+			return err
+		}
+	}
+	db.saveListMeta(idxTree, key, headSeq, tailSeq, expireAt)
+	return nil
 }

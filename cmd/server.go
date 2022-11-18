@@ -41,7 +41,12 @@ type ServerOptions struct {
 
 func main() {
 	var RoseCfg server.RoseDBCfg
-	server.NewConfigToml("rose.toml", &RoseCfg)
+	if v := server.NewConfigToml("rose.toml", &RoseCfg); v == nil {
+		logger.Errorf("start rose db fail config is nil")
+		return
+	}
+
+	server.DBConfig = RoseCfg.RoseConfig
 
 	serverOpts := &ServerOptions{
 		dbPath:    RoseCfg.RoseConfig.DBFilePath,
@@ -52,7 +57,7 @@ func main() {
 
 	// open a default database
 	path := filepath.Join(serverOpts.dbPath, fmt.Sprintf(server.DBName, server.DefaultDB))
-	opts := rosedb.DefaultOptions(RoseCfg.RoseConfig, path)
+	opts := rosedb.DefaultOptions(path)
 	now := time.Now()
 	db, err := rosedb.Open(opts)
 	if err != nil {

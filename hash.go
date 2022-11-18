@@ -3,39 +3,36 @@ package rosedb
 import (
 	"bytes"
 	"errors"
-	"github.com/flower-corp/rosedb/ds/art"
-	"github.com/flower-corp/rosedb/logfile"
-	"github.com/flower-corp/rosedb/logger"
-	"github.com/flower-corp/rosedb/server"
-	"github.com/flower-corp/rosedb/util"
 	"math"
 	"math/rand"
 	"regexp"
 	"strconv"
 	"time"
+
+	"github.com/flower-corp/rosedb/logfile"
+	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/server"
+	"github.com/flower-corp/rosedb/util"
 )
 
 // HSet sets field in the hash stored at key to value. If key does not exist, a new key holding a hash is created.
 // If field already exists in the hash, it is overwritten.
 // Return num of elements in hash of the specified key.
 // Multiple field-value pair is accepted. Parameter order should be like "key", "field", "value", "field", "value"...
-func (db *RoseDB) HSet(key []byte, args ...[]byte) error {
+func (db *RoseDB) HSet(expireAt int64, key []byte, args ...[]byte) error {
 	db.hashIndex.mu.Lock()
 	defer db.hashIndex.mu.Unlock()
 
 	if len(args) == 0 || len(args)&1 == 1 {
 		return server.ErrWrongNumberOfArgs
 	}
-	if db.hashIndex.trees[string(key)] == nil {
-		db.hashIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.hashIndex.trees[string(key)]
+	idxTree := db.hashIndex.GetTreeWithNew(key)
 
 	// add multiple field value pairs
 	for i := 0; i < len(args); i += 2 {
 		field, value := args[i], args[i+1]
 		hashKey := db.encodeKey(key, field)
-		entry := &logfile.LogEntry{Key: hashKey, Value: value}
+		entry := &logfile.LogEntry{Key: hashKey, Value: value, ExpiredAt: expireAt}
 		valuePos, err := db.writeLogEntry(entry, Hash)
 		if err != nil {
 			return err
@@ -59,31 +56,16 @@ func (db *RoseDB) HSetNX(key, field, value []byte) (bool, error) {
 	db.hashIndex.mu.Lock()
 	defer db.hashIndex.mu.Unlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
-		db.hashIndex.trees[string(key)] = art.NewART()
-	}
-	idxTree := db.hashIndex.trees[string(key)]
+	idxTree := db.hashIndex.GetTreeWithNew(key)
 	val, err := db.getVal(idxTree, field, Hash)
 	if err != nil {
 		return false, err
 	}
-
 	// field exists in db
 	if val != nil {
 		return false, nil
 	}
-	hashKey := db.encodeKey(key, field)
-	ent := &logfile.LogEntry{Key: hashKey, Value: value}
-	valuePos, err := db.writeLogEntry(ent, Hash)
-	if err != nil {
-		return false, err
-	}
-
-	entry := &logfile.LogEntry{Key: field, Value: value}
-	_, size := logfile.EncodeEntry(ent)
-	valuePos.entrySize = size
-	err = db.updateIndexTree(idxTree, entry, valuePos, true, Hash)
-	if err != nil {
+	if err := db.HSet(0, key, field, value); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -94,10 +76,10 @@ func (db *RoseDB) HGet(key, field []byte) ([]byte, error) {
 	db.hashIndex.mu.RLock()
 	defer db.hashIndex.mu.RUnlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return nil, nil
 	}
-	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
 	if err == server.ErrKeyNotFound {
 		return nil, nil
@@ -115,14 +97,14 @@ func (db *RoseDB) HMGet(key []byte, fields ...[]byte) (vals [][]byte, err error)
 
 	length := len(fields)
 	// key not exist
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		for i := 0; i < length; i++ {
 			vals = append(vals, nil)
 		}
 		return vals, nil
 	}
 	// key exist
-	idxTree := db.hashIndex.trees[string(key)]
 
 	for _, field := range fields {
 		val, err := db.getVal(idxTree, field, Hash)
@@ -142,10 +124,10 @@ func (db *RoseDB) HDel(key []byte, fields ...[]byte) (int, error) {
 	db.hashIndex.mu.Lock()
 	defer db.hashIndex.mu.Unlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return 0, nil
 	}
-	idxTree := db.hashIndex.trees[string(key)]
 
 	var count int
 	for _, field := range fields {
@@ -180,10 +162,10 @@ func (db *RoseDB) HExists(key, field []byte) (bool, error) {
 	db.hashIndex.mu.RLock()
 	defer db.hashIndex.mu.RUnlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return false, nil
 	}
-	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
 	if err != nil && err != server.ErrKeyNotFound {
 		return false, err
@@ -196,10 +178,10 @@ func (db *RoseDB) HLen(key []byte) int {
 	db.hashIndex.mu.RLock()
 	defer db.hashIndex.mu.RUnlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return 0
 	}
-	idxTree := db.hashIndex.trees[string(key)]
 	return idxTree.Size()
 }
 
@@ -209,11 +191,11 @@ func (db *RoseDB) HKeys(key []byte) ([][]byte, error) {
 	defer db.hashIndex.mu.RUnlock()
 
 	var keys [][]byte
-	tree, ok := db.hashIndex.trees[string(key)]
-	if !ok {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return keys, nil
 	}
-	iter := tree.Iterator()
+	iter := idxTree.Iterator()
 	for iter.HasNext() {
 		node, err := iter.Next()
 		if err != nil {
@@ -230,8 +212,8 @@ func (db *RoseDB) HVals(key []byte) ([][]byte, error) {
 	defer db.hashIndex.mu.RUnlock()
 
 	var values [][]byte
-	tree, ok := db.hashIndex.trees[string(key)]
-	if !ok {
+	tree := db.hashIndex.GetTree(key)
+	if tree == nil {
 		return values, nil
 	}
 
@@ -255,8 +237,8 @@ func (db *RoseDB) HGetAll(key []byte) ([][]byte, error) {
 	db.hashIndex.mu.RLock()
 	defer db.hashIndex.mu.RUnlock()
 
-	tree, ok := db.hashIndex.trees[string(key)]
-	if !ok {
+	tree := db.hashIndex.GetTree(key)
+	if tree == nil {
 		return [][]byte{}, nil
 	}
 
@@ -279,16 +261,44 @@ func (db *RoseDB) HGetAll(key []byte) ([][]byte, error) {
 	return pairs[:index], nil
 }
 
+//how to expire hash key, now tree key not expire how to do
+func (db *RoseDB) HExpire(key []byte, expire time.Duration) error {
+	db.hashIndex.mu.Lock()
+	tree := db.hashIndex.GetTree(key)
+	db.hashIndex.mu.Unlock()
+	if tree == nil {
+		return nil
+	}
+	expireAt := time.Now().Add(expire).Unix()
+	iter := tree.Iterator()
+	for iter.HasNext() {
+		node, err := iter.Next()
+		if err != nil {
+			return err
+		}
+		field := node.Key()
+		val, err := db.getVal(tree, field, Hash)
+		if err != nil && err != server.ErrKeyNotFound {
+			return err
+		}
+		if err == nil {
+			db.HSet(expireAt, key, field, val)
+		}
+	}
+	tree.ExpireAt = expireAt
+	return nil
+}
+
 // HStrLen returns the string length of the value associated with field in the hash stored at key.
 // If the key or the field do not exist, 0 is returned.
 func (db *RoseDB) HStrLen(key, field []byte) int {
 	db.hashIndex.mu.RLock()
 	defer db.hashIndex.mu.RUnlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return 0
 	}
-	idxTree := db.hashIndex.trees[string(key)]
 	val, err := db.getVal(idxTree, field, Hash)
 	if err == server.ErrKeyNotFound {
 		return 0
@@ -307,10 +317,10 @@ func (db *RoseDB) HScan(key []byte, prefix []byte, pattern string, count int) ([
 
 	db.hashIndex.mu.RLock()
 	defer db.hashIndex.mu.RUnlock()
-	if db.hashIndex.trees[string(key)] == nil {
+	idxTree := db.hashIndex.GetTree(key)
+	if idxTree == nil {
 		return nil, nil
 	}
-	idxTree := db.hashIndex.trees[string(key)]
 	fields := idxTree.PrefixScan(prefix, count)
 	if len(fields) == 0 {
 		return nil, nil
@@ -348,11 +358,7 @@ func (db *RoseDB) HIncrBy(key, field []byte, incr int64) (int64, error) {
 	db.hashIndex.mu.Lock()
 	defer db.hashIndex.mu.Unlock()
 
-	if db.hashIndex.trees[string(key)] == nil {
-		db.hashIndex.trees[string(key)] = art.NewART()
-	}
-
-	idxTree := db.hashIndex.trees[string(key)]
+	idxTree := db.hashIndex.GetTreeWithNew(key)
 	val, err := db.getVal(idxTree, field, Hash)
 	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return 0, err

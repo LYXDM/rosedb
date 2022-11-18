@@ -75,7 +75,8 @@ type Options struct {
 }
 
 // DefaultOptions default options for opening a RoseDB.
-func DefaultOptions(cfg server.Config, dbPath string) Options {
+func DefaultOptions(dbPath string) Options {
+	cfg := server.DBConfig
 	ratio := 0.5
 	if v, err := strconv.ParseFloat(cfg.LogFileGCRatio, 64); err == nil {
 		ratio = v

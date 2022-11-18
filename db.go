@@ -71,20 +71,20 @@ type (
 
 	hashIndex struct {
 		mu    *sync.RWMutex
-		trees map[string]*art.AdaptiveRadixTree
+		trees map[string]*art.AdaptiveRadixTreeExpire
 	}
 
 	setIndex struct {
 		mu      *sync.RWMutex
 		murhash *util.Murmur128
-		trees   map[string]*art.AdaptiveRadixTree
+		trees   map[string]*art.AdaptiveRadixTreeExpire
 	}
 
 	zsetIndex struct {
 		mu      *sync.RWMutex
 		indexes *zset.SortedSet
 		murhash *util.Murmur128
-		trees   map[string]*art.AdaptiveRadixTree
+		trees   map[string]*art.AdaptiveRadixTreeExpire
 	}
 )
 
@@ -97,24 +97,85 @@ func newListIdx() *listIndex {
 }
 
 func newHashIdx() *hashIndex {
-	return &hashIndex{trees: make(map[string]*art.AdaptiveRadixTree), mu: new(sync.RWMutex)}
+	return &hashIndex{trees: make(map[string]*art.AdaptiveRadixTreeExpire), mu: new(sync.RWMutex)}
+}
+
+//some method
+func (h *hashIndex) GetTree(key []byte) *art.AdaptiveRadixTreeExpire {
+	tree := h.trees[string(key)]
+	if tree == nil {
+		return nil
+	}
+	if tree.ExpireAt != 0 && tree.ExpireAt < time.Now().Unix() {
+		delete(h.trees, string(key))
+		return nil
+	}
+	return tree
+}
+
+func (h *hashIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTreeExpire {
+	tree := h.GetTree(key)
+	if tree != nil {
+		return tree
+	}
+	tree = art.NewARTExpire()
+	h.trees[string(key)] = tree
+	return tree
 }
 
 func newSetIdx() *setIndex {
-	return &setIndex{
-		murhash: util.NewMurmur128(),
-		trees:   make(map[string]*art.AdaptiveRadixTree),
-		mu:      new(sync.RWMutex),
+	return &setIndex{murhash: util.NewMurmur128(), trees: make(map[string]*art.AdaptiveRadixTreeExpire), mu: new(sync.RWMutex)}
+}
+
+func (s *setIndex) GetTree(key []byte) *art.AdaptiveRadixTreeExpire {
+	tree := s.trees[string(key)]
+	if tree == nil {
+		return nil
 	}
+	if tree.ExpireAt != 0 && tree.ExpireAt < time.Now().Unix() {
+		delete(s.trees, string(key))
+		return nil
+	}
+	return tree
+}
+
+func (s *setIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTreeExpire {
+	tree := s.GetTree(key)
+	if tree != nil {
+		return tree
+	}
+	tree = art.NewARTExpire()
+	s.trees[string(key)] = tree
+	return tree
 }
 
 func newZSetIdx() *zsetIndex {
-	return &zsetIndex{
-		indexes: zset.New(),
-		murhash: util.NewMurmur128(),
-		trees:   make(map[string]*art.AdaptiveRadixTree),
-		mu:      new(sync.RWMutex),
+	return &zsetIndex{indexes: zset.New(), murhash: util.NewMurmur128(), trees: make(map[string]*art.AdaptiveRadixTreeExpire),
+		mu: new(sync.RWMutex),
 	}
+}
+
+func (z *zsetIndex) GetTree(key []byte) *art.AdaptiveRadixTreeExpire {
+	tree := z.trees[string(key)]
+	if tree == nil {
+		return nil
+	}
+	if tree.ExpireAt != 0 && tree.ExpireAt < time.Now().Unix() {
+		delete(z.trees, string(key))
+		delete(z.indexes.Record, string(key))
+		return nil
+	}
+	return tree
+}
+
+func (z *zsetIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTreeExpire {
+	tree := z.GetTree(key)
+	if tree != nil {
+		return tree
+	}
+	tree = art.NewARTExpire()
+	z.trees[string(key)] = tree
+	return tree
 }
 
 // Open a rosedb instance. You must call Close after using it.
@@ -298,7 +359,7 @@ func (db *RoseDB) writeLogEntry(ent *logfile.LogEntry, dataType DataType) (*valu
 		}
 
 		db.mu.Lock()
-		defer db.mu.Lock()
+		defer db.mu.Unlock()
 		// save the old log file in archived files.
 		activeFileId := activeLogFile.Fid
 		if db.archivedLogFiles[dataType] == nil {
@@ -500,7 +561,7 @@ func (db *RoseDB) doRunGCAsync() {
 
 func (db *RoseDB) doRunGCSync() {
 	for dType := String; dType < server.LogFileTypeNum; dType++ {
-		if err := db.doRunGC(dType, -1, db.opts.LogFileGCRatio); err != nil {
+		if err := db.doRunGC(dType, -1, 0); err != nil { //all archived do gc
 			logger.Errorf("log file gc err, dataType: [%v], err: [%v]", dType, err)
 		}
 	}
@@ -567,10 +628,10 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 		db.hashIndex.mu.Lock()
 		defer db.hashIndex.mu.Unlock()
 		key, field := db.decodeKey(ent.Key)
-		if db.hashIndex.trees[string(key)] == nil {
+		idxTree := db.hashIndex.GetTree(key)
+		if idxTree == nil {
 			return nil
 		}
-		idxTree := db.hashIndex.trees[string(key)]
 		indexVal := idxTree.Get(field)
 		if indexVal == nil {
 			return nil
@@ -597,10 +658,10 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 	maybeRewriteSets := func(fid uint32, offset int64, ent *logfile.LogEntry) error {
 		db.setIndex.mu.Lock()
 		defer db.setIndex.mu.Unlock()
-		if db.setIndex.trees[string(ent.Key)] == nil {
+		idxTree := db.setIndex.GetTree(ent.Key)
+		if idxTree == nil {
 			return nil
 		}
-		idxTree := db.setIndex.trees[string(ent.Key)]
 		if err := db.setIndex.murhash.Write(ent.Value); err != nil {
 			logger.Fatalf("fail to write murmur hash: %v", err)
 		}
@@ -633,10 +694,10 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 		db.zsetIndex.mu.Lock()
 		defer db.zsetIndex.mu.Unlock()
 		key, _ := db.decodeKey(ent.Key)
-		if db.zsetIndex.trees[string(key)] == nil {
+		idxTree := db.zsetIndex.GetTree(key)
+		if idxTree == nil {
 			return nil
 		}
-		idxTree := db.zsetIndex.trees[string(key)]
 		if err := db.zsetIndex.murhash.Write(ent.Value); err != nil {
 			logger.Fatalf("fail to write murmur hash: %v", err)
 		}

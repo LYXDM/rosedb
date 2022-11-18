@@ -20,7 +20,7 @@ type EncodeKey func(key, subKey []byte) []byte
 type (
 	// SortedSet sorted set struct
 	SortedSet struct {
-		record map[string]*SortedSetNode
+		Record map[string]*SortedSetNode
 	}
 
 	// SortedSetNode node of sorted set
@@ -57,7 +57,7 @@ func New() *SortedSet {
 }
 
 func (z *SortedSet) IterateAndSend(chn chan *logfile.LogEntry, encode EncodeKey) {
-	for key, ss := range z.record {
+	for key, ss := range z.Record {
 		zsetKey := []byte(key)
 		if ss.skl.head == nil {
 			return
@@ -79,10 +79,10 @@ func (z *SortedSet) ZAdd(key string, score float64, member string) {
 			dict: make(map[string]*sklNode),
 			skl:  newSkipList(),
 		}
-		z.record[key] = node
+		z.Record[key] = node
 	}
 
-	item := z.record[key]
+	item := z.Record[key]
 	v, exist := item.dict[member]
 
 	var node *sklNode
@@ -106,7 +106,7 @@ func (z *SortedSet) ZScore(key string, member string) (ok bool, score float64) {
 		return
 	}
 
-	node, exist := z.record[key].dict[member]
+	node, exist := z.Record[key].dict[member]
 	if !exist {
 		return
 	}
@@ -120,7 +120,7 @@ func (z *SortedSet) ZCard(key string) int {
 		return 0
 	}
 
-	return len(z.record[key].dict)
+	return len(z.Record[key].dict)
 }
 
 // ZRank returns the rank of member in the sorted set stored at key, with the scores ordered from low to high.
@@ -130,12 +130,12 @@ func (z *SortedSet) ZRank(key, member string) int64 {
 		return -1
 	}
 
-	v, exist := z.record[key].dict[member]
+	v, exist := z.Record[key].dict[member]
 	if !exist {
 		return -1
 	}
 
-	rank := z.record[key].skl.sklGetRank(v.score, member)
+	rank := z.Record[key].skl.sklGetRank(v.score, member)
 	rank--
 
 	return rank
@@ -148,14 +148,14 @@ func (z *SortedSet) ZRevRank(key, member string) int64 {
 		return -1
 	}
 
-	v, exist := z.record[key].dict[member]
+	v, exist := z.Record[key].dict[member]
 	if !exist {
 		return -1
 	}
 
-	rank := z.record[key].skl.sklGetRank(v.score, member)
+	rank := z.Record[key].skl.sklGetRank(v.score, member)
 
-	return z.record[key].skl.length - rank
+	return z.Record[key].skl.length - rank
 }
 
 // ZIncrBy increments the score of member in the sorted set stored at key by increment.
@@ -163,7 +163,7 @@ func (z *SortedSet) ZRevRank(key, member string) int64 {
 // If key does not exist, a new sorted set with the specified member as its sole member is created.
 func (z *SortedSet) ZIncrBy(key string, increment float64, member string) float64 {
 	if z.exist(key) {
-		node, exist := z.record[key].dict[member]
+		node, exist := z.Record[key].dict[member]
 		if exist {
 			increment += node.score
 		}
@@ -220,10 +220,10 @@ func (z *SortedSet) ZRem(key, member string) bool {
 		return false
 	}
 
-	v, exist := z.record[key].dict[member]
+	v, exist := z.Record[key].dict[member]
 	if exist {
-		z.record[key].skl.sklDelete(v.score, member)
-		delete(z.record[key].dict, member)
+		z.Record[key].skl.sklDelete(v.score, member)
+		delete(z.Record[key].dict, member)
 		return true
 	}
 
@@ -261,7 +261,7 @@ func (z *SortedSet) ZScoreRange(key string, min, max float64) (val []interface{}
 		return
 	}
 
-	item := z.record[key].skl
+	item := z.Record[key].skl
 	minScore := item.head.level[0].forward.score
 	if min < minScore {
 		min = minScore
@@ -299,7 +299,7 @@ func (z *SortedSet) ZRevScoreRange(key string, max, min float64) (val []interfac
 		return
 	}
 
-	item := z.record[key].skl
+	item := z.Record[key].skl
 	minScore := item.head.level[0].forward.score
 	if min < minScore {
 		min = minScore
@@ -337,18 +337,18 @@ func (z *SortedSet) ZKeyExists(key string) bool {
 // ZClear clear the key in zset.
 func (z *SortedSet) ZClear(key string) {
 	if z.ZKeyExists(key) {
-		delete(z.record, key)
+		delete(z.Record, key)
 	}
 }
 
 func (z *SortedSet) exist(key string) bool {
-	_, exist := z.record[key]
+	_, exist := z.Record[key]
 	return exist
 }
 
 func (z *SortedSet) getByRank(key string, rank int64, reverse bool) (string, float64) {
 
-	skl := z.record[key].skl
+	skl := z.Record[key].skl
 	if rank < 0 || rank > skl.length {
 		return "", math.MinInt64
 	}
@@ -364,7 +364,7 @@ func (z *SortedSet) getByRank(key string, rank int64, reverse bool) (string, flo
 		return "", math.MinInt64
 	}
 
-	node := z.record[key].dict[n.member]
+	node := z.Record[key].dict[n.member]
 	if node == nil {
 		return "", math.MinInt64
 	}
@@ -373,7 +373,7 @@ func (z *SortedSet) getByRank(key string, rank int64, reverse bool) (string, flo
 }
 
 func (z *SortedSet) findRange(key string, start, stop int64, reverse bool, withScores bool) (val []interface{}) {
-	skl := z.record[key].skl
+	skl := z.Record[key].skl
 	length := skl.length
 
 	if start < 0 {

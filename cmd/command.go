@@ -58,8 +58,8 @@ func selectDB(cli *Client, args [][]byte) (interface{}, error) {
 
 	db := cli.svr.dbs[n]
 	if db == nil {
-		path := filepath.Join(cli.svr.opts.dbPath, fmt.Sprintf(server.DBName, server.DefaultDB))
-		opts := rosedb.DefaultOptions(server.DBConfig, path)
+		path := filepath.Join(cli.svr.opts.dbPath, fmt.Sprintf(server.DBName, n))
+		opts := rosedb.DefaultOptions(path)
 		newdb, err := rosedb.Open(opts)
 		if err != nil {
 			return nil, err
@@ -478,6 +478,22 @@ func lRem(cli *Client, args [][]byte) (interface{}, error) {
 	return redcon.SimpleInt(rem), err
 }
 
+func lExpires(cli *Client, args [][]byte) (interface{}, error) {
+	if len(args) != 2 {
+		return 0, newWrongNumOfArgsError("lExpire")
+	}
+	key, expire := args[0], args[1]
+	expireSec, err := strconv.Atoi(string(expire))
+	if err != nil {
+		return 0, err
+	}
+	err = cli.db.LExpires(key, time.Second*time.Duration(expireSec))
+	if err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
 // +-------+--------+----------+------------+-----------+-------+---------+
 // |--------------------------- Hash commands ----------------------------|
 // +-------+--------+----------+------------+-----------+-------+---------+
@@ -488,7 +504,7 @@ func hSet(cli *Client, args [][]byte) (interface{}, error) {
 	key := args[0]
 	var count int
 	for i := 1; i < len(args); i += 2 {
-		err := cli.db.HSet(key, args[i], args[i+1])
+		err := cli.db.HSet(0, key, args[i], args[i+1])
 		if err != nil {
 			return nil, err
 		}
@@ -578,6 +594,22 @@ func hGetAll(cli *Client, args [][]byte) (interface{}, error) {
 	return cli.db.HGetAll(args[0])
 }
 
+func hExpire(cli *Client, args [][]byte) (interface{}, error) {
+	if len(args) != 2 {
+		return 0, newWrongNumOfArgsError("hExipres")
+	}
+	key, expire := args[0], args[1]
+	expireSec, err := strconv.Atoi(string(expire))
+	if err != nil {
+		return 0, err
+	}
+	err = cli.db.HExpire(key, time.Second*time.Duration(expireSec))
+	if err != nil {
+		return 0, err
+	}
+	return 1, nil
+}
+
 func hStrLen(cli *Client, args [][]byte) (interface{}, error) {
 	if len(args) != 2 {
 		return nil, newWrongNumOfArgsError("hstrlen")
@@ -649,7 +681,7 @@ func sAdd(cli *Client, args [][]byte) (interface{}, error) {
 	for _, val := range args[1:] {
 		isMember := cli.db.SIsMember(key, val)
 		if !isMember {
-			err := cli.db.SAdd(key, val)
+			err := cli.db.SAdd(0, key, val)
 			if err != nil {
 				return nil, err
 			}
@@ -687,6 +719,17 @@ func sPop(cli *Client, args [][]byte) (interface{}, error) {
 		return nil, errValueIsInvalid
 	}
 	return cli.db.SPop(args[0], uint(count))
+}
+
+func sExpires(cli *Client, args [][]byte) (interface{}, error) {
+	if len(args) != 2 {
+		return 0, newWrongNumOfArgsError("sExpires")
+	}
+	expire, err := util.StrToInt64(string(args[1]))
+	if err != nil {
+		return 0, errValueIsInvalid
+	}
+	return 1, cli.db.SExpires(args[0], time.Second*time.Duration(expire))
 }
 
 func sIsMember(cli *Client, args [][]byte) (interface{}, error) {
@@ -784,7 +827,7 @@ func zAdd(cli *Client, args [][]byte) (interface{}, error) {
 		if err != nil {
 			return nil, errValueIsInvalid
 		}
-		err = cli.db.ZAdd(key, score, args[i+1])
+		err = cli.db.ZAdd(key, score, args[i+1], 0)
 		if err != nil {
 			return nil, err
 		}
@@ -798,6 +841,17 @@ func zScore(cli *Client, args [][]byte) (interface{}, error) {
 	}
 	_, score := cli.db.ZScore(args[0], args[1])
 	return score, nil
+}
+
+func zExpires(cli *Client, args [][]byte) (interface{}, error) {
+	if len(args) != 2 {
+		return 0, newWrongNumOfArgsError("zexpires")
+	}
+	expires, err := util.StrToInt64(string(args[1]))
+	if err != nil {
+		return 0, err
+	}
+	return 1, cli.db.ZExpires(args[0], time.Second*time.Duration(expires))
 }
 
 func zRem(cli *Client, args [][]byte) (interface{}, error) {
@@ -871,4 +925,15 @@ func zRevRank(cli *Client, args [][]byte) (interface{}, error) {
 		return nil, nil
 	}
 	return rank, nil
+}
+
+func Expires(cli *Client, args [][]byte) (interface{}, error) {
+	if len(args) != 2 {
+		return 0, newWrongNumOfArgsError("expires")
+	}
+	lExpires(cli, args)
+	hExpire(cli, args)
+	sExpires(cli, args)
+	zExpires(cli, args)
+	return 1, nil
 }
