@@ -182,6 +182,17 @@ func mSetNX(cli *Client, args [][]byte) (interface{}, error) {
 	return redcon.SimpleString(resultOK), nil
 }
 
+func strExpires(cli *Client, args [][]byte) (interface{}, error) {
+	if len(args) != 2 {
+		return 0, newWrongNumOfArgsError("expires")
+	}
+	expire, err := util.StrToInt64(string(args[1]))
+	if err != nil {
+		return 0, err
+	}
+	return 1, cli.db.StrExpire(args[0], time.Second*time.Duration(expire))
+}
+
 func decr(cli *Client, args [][]byte) (interface{}, error) {
 	if len(args) != 1 {
 		return nil, newWrongNumOfArgsError("decr")
@@ -931,6 +942,7 @@ func Expires(cli *Client, args [][]byte) (interface{}, error) {
 	if len(args) != 2 {
 		return 0, newWrongNumOfArgsError("expires")
 	}
+	strExpires(cli, args)
 	lExpires(cli, args)
 	hExpire(cli, args)
 	sExpires(cli, args)

@@ -427,17 +427,17 @@ func (db *RoseDB) Scan(prefix []byte, pattern string, count int) ([][]byte, erro
 }
 
 // Expire set the expiration time for the given key.
-func (db *RoseDB) Expire(key []byte, duration time.Duration) error {
+func (db *RoseDB) StrExpire(key []byte, duration time.Duration) error {
 	if duration <= 0 {
 		return nil
 	}
-	db.strIndex.mu.Lock()
+	db.strIndex.mu.RLock()
 	val, err := db.getVal(db.strIndex.idxTree, key, String)
 	if err != nil {
-		db.strIndex.mu.Unlock()
+		db.strIndex.mu.RUnlock()
 		return err
 	}
-	db.strIndex.mu.Unlock()
+	db.strIndex.mu.RUnlock()
 	return db.SetEX(key, val, duration)
 }
 
