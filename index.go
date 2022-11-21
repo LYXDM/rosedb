@@ -66,8 +66,8 @@ func (db *RoseDB) buildListIndex(ent *logfile.LogEntry, pos *valuePos) {
 		db.listIndex.trees[string(listKey)] = art.NewART()
 	}
 	idxTree := db.listIndex.trees[string(listKey)]
-
-	if ent.Type == logfile.TypeDelete {
+	ts := time.Now().Unix()
+	if ent.Type == logfile.TypeDelete || (ent.ExpiredAt != 0 && ent.ExpiredAt < ts) {
 		idxTree.Delete(ent.Key)
 		return
 	}
@@ -86,7 +86,8 @@ func (db *RoseDB) buildHashIndex(ent *logfile.LogEntry, pos *valuePos) {
 	key, field := db.decodeKey(ent.Key)
 	idxTree := db.hashIndex.GetTreeWithNew(key)
 
-	if ent.Type == logfile.TypeDelete {
+	ts := time.Now().Unix()
+	if ent.Type == logfile.TypeDelete || (ent.ExpiredAt != 0 && ent.ExpiredAt < ts) {
 		idxTree.Delete(field)
 		return
 	}
@@ -105,7 +106,8 @@ func (db *RoseDB) buildHashIndex(ent *logfile.LogEntry, pos *valuePos) {
 func (db *RoseDB) buildSetsIndex(ent *logfile.LogEntry, pos *valuePos) {
 	idxTree := db.setIndex.GetTreeWithNew(ent.Key)
 
-	if ent.Type == logfile.TypeDelete {
+	ts := time.Now().Unix()
+	if ent.Type == logfile.TypeDelete || (ent.ExpiredAt != 0 && ent.ExpiredAt < ts) {
 		idxTree.Delete(ent.Value)
 		return
 	}
@@ -128,7 +130,8 @@ func (db *RoseDB) buildSetsIndex(ent *logfile.LogEntry, pos *valuePos) {
 }
 
 func (db *RoseDB) buildZSetIndex(ent *logfile.LogEntry, pos *valuePos) {
-	if ent.Type == logfile.TypeDelete {
+	ts := time.Now().Unix()
+	if ent.Type == logfile.TypeDelete || (ent.ExpiredAt != 0 && ent.ExpiredAt < ts) {
 		db.zsetIndex.indexes.ZRem(string(ent.Key), string(ent.Value))
 
 		if db.zsetIndex.GetTree(ent.Key) != nil {
@@ -180,6 +183,7 @@ func (db *RoseDB) loadIndexFromLogFiles() error {
 			}
 			if logFile == nil {
 				logger.Fatalf("log file is nil, failed to open db")
+				continue
 			}
 
 			var offset int64
