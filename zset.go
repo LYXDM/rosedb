@@ -5,6 +5,7 @@ import (
 
 	"github.com/flower-corp/rosedb/logfile"
 	"github.com/flower-corp/rosedb/logger"
+	"github.com/flower-corp/rosedb/server"
 	"github.com/flower-corp/rosedb/util"
 )
 
@@ -23,7 +24,7 @@ func (db *RoseDB) ZAdd(key []byte, score float64, member []byte, expireAt int64)
 	scoreBuf := []byte(util.Float64ToStr(score))
 	zsetKey := db.encodeKey(key, scoreBuf)
 	entry := &logfile.LogEntry{Key: zsetKey, Value: member, ExpiredAt:expireAt}
-	pos, err := db.writeLogEntry(entry, ZSet)
+	pos, err := db.writeLogEntry(entry, server.ZSet)
 	if err != nil {
 		return err
 	}
@@ -31,7 +32,7 @@ func (db *RoseDB) ZAdd(key []byte, score float64, member []byte, expireAt int64)
 	_, size := logfile.EncodeEntry(entry)
 	pos.entrySize = size
 	ent := &logfile.LogEntry{Key: sum, Value: member}
-	if err := db.updateIndexTree(idxTree, ent, pos, true, ZSet); err != nil {
+	if err := db.updateIndexTree(idxTree, ent, pos, true); err != nil {
 		return err
 	}
 	db.zsetIndex.indexes.ZAdd(string(key), score, string(sum))
@@ -65,7 +66,7 @@ func (db *RoseDB) ZExpires(key []byte, expire time.Duration) error {
 		if node == nil || err != nil {
 			continue
 		}
-		val, err := db.getVal(idxTree, node.Key(), ZSet)
+		val, err := db.getVal(idxTree, node.Key())
 		if err != nil {
 			return nil
 		}
@@ -99,9 +100,9 @@ func (db *RoseDB) ZRem(key, member []byte) error {
 	idxTree := db.zsetIndex.GetTreeWithNew(key)
 
 	oldVal, deleted := idxTree.Delete(sum)
-	db.sendDiscard(oldVal, deleted, ZSet)
+	db.sendDiscard(oldVal, deleted, server.ZSet)
 	entry := &logfile.LogEntry{Key: key, Value: sum, Type: logfile.TypeDelete}
-	pos, err := db.writeLogEntry(entry, ZSet)
+	pos, err := db.writeLogEntry(entry, server.ZSet)
 	if err != nil {
 		return err
 	}
@@ -110,7 +111,7 @@ func (db *RoseDB) ZRem(key, member []byte) error {
 	_, size := logfile.EncodeEntry(entry)
 	node := &indexNode{fid: pos.fid, entrySize: size}
 	select {
-	case db.discards[ZSet].valChan <- node:
+	case db.discards[server.ZSet].valChan <- node:
 	default:
 		logger.Warn("send to discard chan fail")
 	}
@@ -161,7 +162,7 @@ func (db *RoseDB) zRangeInternal(key []byte, start, stop int, rev bool) ([][]byt
 	}
 	for _, val := range values {
 		v, _ := val.(string)
-		if val, err := db.getVal(idxTree, []byte(v), ZSet); err != nil {
+		if val, err := db.getVal(idxTree, []byte(v)); err != nil {
 			return nil, err
 		} else {
 			res = append(res, val)

@@ -17,9 +17,6 @@ func (db *RoseDB) LPush(key []byte, values ...[]byte) error {
 	db.listIndex.mu.Lock()
 	defer db.listIndex.mu.Unlock()
 
-	if db.listIndex.trees[string(key)] == nil {
-		db.listIndex.trees[string(key)] = art.NewART()
-	}
 	for _, val := range values {
 		if err := db.pushInternal(key, val, true); err != nil {
 			return err
@@ -53,9 +50,6 @@ func (db *RoseDB) RPush(key []byte, values ...[]byte) error {
 	db.listIndex.mu.Lock()
 	defer db.listIndex.mu.Unlock()
 
-	if db.listIndex.trees[string(key)] == nil {
-		db.listIndex.trees[string(key)] = art.NewART()
-	}
 	for _, val := range values {
 		if err := db.pushInternal(key, val, false); err != nil {
 			return err
@@ -110,9 +104,6 @@ func (db *RoseDB) LMove(srcKey, dstKey []byte, srcIsLeft, dstIsLeft bool) ([]byt
 		return nil, nil
 	}
 
-	if db.listIndex.trees[string(dstKey)] == nil {
-		db.listIndex.trees[string(dstKey)] = art.NewART()
-	}
 	if err = db.pushInternal(dstKey, popValue, dstIsLeft); err != nil {
 		return nil, err
 	}
@@ -162,7 +153,7 @@ func (db *RoseDB) LIndex(key []byte, index int) ([]byte, error) {
 	}
 
 	encKey := db.encodeListKey(key, seq)
-	val, err := db.getVal(idxTree, encKey, List)
+	val, err := db.getVal(idxTree, encKey)
 	if err != nil {
 		return nil, err
 	}
@@ -194,11 +185,11 @@ func (db *RoseDB) LSet(key []byte, index int, value []byte) error {
 
 	encKey := db.encodeListKey(key, seq)
 	ent := &logfile.LogEntry{Key: encKey, Value: value}
-	valuePos, err := db.writeLogEntry(ent, List)
+	valuePos, err := db.writeLogEntry(ent, server.List)
 	if err != nil {
 		return err
 	}
-	if err = db.updateIndexTree(idxTree, ent, valuePos, true, List); err != nil {
+	if err = db.updateIndexTree(idxTree, ent, valuePos, true); err != nil {
 		return err
 	}
 	return nil
@@ -254,7 +245,7 @@ func (db *RoseDB) LRange(key []byte, start, end int) (values [][]byte, err error
 	// the endSeq value is included
 	for seq := startSeq; seq < endSeq+1; seq++ {
 		encKey := db.encodeListKey(key, seq)
-		val, err := db.getVal(idxTree, encKey, List)
+		val, err := db.getVal(idxTree, encKey)
 
 		if err != nil {
 			return nil, err
@@ -279,7 +270,7 @@ func (db *RoseDB) decodeListKey(buf []byte) ([]byte, uint32) {
 }
 
 func (db *RoseDB) listMeta(idxTree *art.AdaptiveRadixTree, key []byte) (uint32, uint32, error) {
-	val, err := db.getVal(idxTree, key, List)
+	val, err := db.getVal(idxTree, key)
 	if err != nil && err != server.ErrKeyNotFound {
 		return 0, 0, err
 	}
@@ -298,16 +289,16 @@ func (db *RoseDB) saveListMeta(idxTree *art.AdaptiveRadixTree, key []byte, headS
 	binary.LittleEndian.PutUint32(buf[:4], headSeq)
 	binary.LittleEndian.PutUint32(buf[4:8], tailSeq)
 	ent := &logfile.LogEntry{Key: key, Value: buf, ExpiredAt: expireAt, Type: logfile.TypeListMeta}
-	pos, err := db.writeLogEntry(ent, List)
+	pos, err := db.writeLogEntry(ent, server.List)
 	if err != nil {
 		return err
 	}
-	err = db.updateIndexTree(idxTree, ent, pos, true, List)
+	err = db.updateIndexTree(idxTree, ent, pos, true)
 	return err
 }
 
 func (db *RoseDB) pushInternal(key []byte, val []byte, isLeft bool) error {
-	idxTree := db.listIndex.trees[string(key)]
+	idxTree := db.listIndex.GetTreeWithNew(key)
 	headSeq, tailSeq, err := db.listMeta(idxTree, key)
 	if err != nil {
 		return err
@@ -318,12 +309,12 @@ func (db *RoseDB) pushInternal(key []byte, val []byte, isLeft bool) error {
 	}
 	encKey := db.encodeListKey(key, seq)
 	ent := &logfile.LogEntry{Key: encKey, Value: val}
-	valuePos, err := db.writeLogEntry(ent, List)
+	valuePos, err := db.writeLogEntry(ent, server.List)
 	if err != nil {
 		return err
 	}
 
-	if err = db.updateIndexTree(idxTree, ent, valuePos, true, List); err != nil {
+	if err = db.updateIndexTree(idxTree, ent, valuePos, true); err != nil {
 		return err
 	}
 
@@ -354,13 +345,13 @@ func (db *RoseDB) popInternal(key []byte, isLeft bool) ([]byte, error) {
 		seq = tailSeq - 1
 	}
 	encKey := db.encodeListKey(key, seq)
-	val, err := db.getVal(idxTree, encKey, List)
+	val, err := db.getVal(idxTree, encKey)
 	if err != nil {
 		return nil, err
 	}
 
 	ent := &logfile.LogEntry{Key: encKey, Type: logfile.TypeDelete}
-	pos, err := db.writeLogEntry(ent, List)
+	pos, err := db.writeLogEntry(ent, server.List)
 	if err != nil {
 		return nil, err
 	}
@@ -374,11 +365,11 @@ func (db *RoseDB) popInternal(key []byte, isLeft bool) ([]byte, error) {
 		return nil, err
 	}
 	// send discard
-	db.sendDiscard(oldVal, updated, List)
+	db.sendDiscard(oldVal, updated, server.List)
 	_, entrySize := logfile.EncodeEntry(ent)
 	node := &indexNode{fid: pos.fid, entrySize: entrySize}
 	select {
-	case db.discards[List].valChan <- node:
+	case db.discards[server.List].valChan <- node:
 	default:
 		logger.Warn("send to discard chan fail")
 	}
@@ -434,7 +425,7 @@ func (db *RoseDB) LRem(key []byte, count int, value []byte) (int, error) {
 	reserveSeq, discardSeq, reserveValueSeq := make([]uint32, 0), make([]uint32, 0), make([][]byte, 0)
 	classifyData := func(key []byte, seq uint32) error {
 		encKey := db.encodeListKey(key, seq)
-		val, err := db.getVal(idxTree, encKey, List)
+		val, err := db.getVal(idxTree, encKey)
 		if err != nil {
 			return err
 		}
@@ -451,9 +442,6 @@ func (db *RoseDB) LRem(key []byte, count int, value []byte) (int, error) {
 	}
 
 	addReserveData := func(key []byte, value []byte, isLeft bool) error {
-		if db.listIndex.trees[string(key)] == nil {
-			db.listIndex.trees[string(key)] = art.NewART()
-		}
 		if err := db.pushInternal(key, value, isLeft); err != nil {
 			return err
 		}
@@ -539,7 +527,7 @@ func (db *RoseDB) LExpires(key []byte, expire time.Duration) error {
 	_, tailSeqCopy := headSeq, tailSeq
 	for seq := headSeq; seq <= tailSeqCopy; seq++ {
 		encKey := db.encodeListKey(key, seq)
-		val, err := db.getVal(idxTree, encKey, List)
+		val, err := db.getVal(idxTree, encKey)
 		if err != nil {
 			continue
 		}
@@ -550,11 +538,11 @@ func (db *RoseDB) LExpires(key []byte, expire time.Duration) error {
 			Value:     val,
 			ExpiredAt: expireAt,
 		}
-		pos, err := db.writeLogEntry(ent, List)
+		pos, err := db.writeLogEntry(ent, server.List)
 		if err != nil {
 			continue
 		}
-		if err = db.updateIndexTree(idxTree, ent, pos, true, List); err != nil {
+		if err = db.updateIndexTree(idxTree, ent, pos, true); err != nil {
 			return err
 		}
 	}

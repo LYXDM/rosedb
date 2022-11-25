@@ -13,29 +13,17 @@ import (
 	"time"
 )
 
-// DataType Define the data structure type.
-type DataType = int8
-
-// Five different data types, support String, List, Hash, Set, Sorted Set right now.
-const (
-	String DataType = iota
-	List
-	Hash
-	Set
-	ZSet
-)
-
-func (db *RoseDB) buildIndex(dataType DataType, ent *logfile.LogEntry, pos *valuePos) {
+func (db *RoseDB) buildIndex(dataType server.DataType, ent *logfile.LogEntry, pos *valuePos) {
 	switch dataType {
-	case String:
+	case server.String:
 		db.buildStrsIndex(ent, pos)
-	case List:
+	case server.List:
 		db.buildListIndex(ent, pos)
-	case Hash:
+	case server.Hash:
 		db.buildHashIndex(ent, pos)
-	case Set:
+	case server.Set:
 		db.buildSetsIndex(ent, pos)
-	case ZSet:
+	case server.ZSet:
 		db.buildZSetIndex(ent, pos)
 	}
 }
@@ -62,10 +50,7 @@ func (db *RoseDB) buildListIndex(ent *logfile.LogEntry, pos *valuePos) {
 	if ent.Type != logfile.TypeListMeta {
 		listKey, _ = db.decodeListKey(ent.Key)
 	}
-	if db.listIndex.trees[string(listKey)] == nil {
-		db.listIndex.trees[string(listKey)] = art.NewART()
-	}
-	idxTree := db.listIndex.trees[string(listKey)]
+	idxTree := db.listIndex.GetTreeWithNew(listKey)
 	ts := time.Now().Unix()
 	if ent.Type == logfile.TypeDelete || (ent.ExpiredAt != 0 && ent.ExpiredAt < ts) {
 		idxTree.Delete(ent.Key)
@@ -163,7 +148,7 @@ func (db *RoseDB) buildZSetIndex(ent *logfile.LogEntry, pos *valuePos) {
 }
 
 func (db *RoseDB) loadIndexFromLogFiles() error {
-	iterateAndHandle := func(dataType DataType, wg *sync.WaitGroup) {
+	iterateAndHandle := func(dataType server.DataType, wg *sync.WaitGroup) {
 		defer wg.Done()
 
 		fids := db.fidMap[dataType]
@@ -207,19 +192,19 @@ func (db *RoseDB) loadIndexFromLogFiles() error {
 	}
 
 	wg := new(sync.WaitGroup)
-	wg.Add(server.LogFileTypeNum)
-	for i := 0; i < server.LogFileTypeNum; i++ {
-		go iterateAndHandle(DataType(i), wg)
+	wg.Add(int(server.ZSet + 1))
+	for i := server.String; i <= server.ZSet; i++ {
+		go iterateAndHandle(i, wg)
 	}
 	wg.Wait()
 	return nil
 }
 
 func (db *RoseDB) updateIndexTree(idxTree art.RadixTreeInterface,
-	ent *logfile.LogEntry, pos *valuePos, sendDiscard bool, dType DataType) error {
+	ent *logfile.LogEntry, pos *valuePos, sendDiscard bool) error {
 
 	var size = pos.entrySize
-	if dType == String || dType == List {
+	if idxTree.DataType() == server.String || idxTree.DataType() == server.List {
 		_, size = logfile.EncodeEntry(ent)
 	}
 	idxNode := &indexNode{fid: pos.fid, offset: pos.offset, entrySize: size}
@@ -232,7 +217,7 @@ func (db *RoseDB) updateIndexTree(idxTree art.RadixTreeInterface,
 	}
 	oldVal, updated := idxTree.Put(ent.Key, idxNode)
 	if sendDiscard {
-		db.sendDiscard(oldVal, updated, dType)
+		db.sendDiscard(oldVal, updated, idxTree.DataType())
 	}
 	return nil
 }
@@ -250,8 +235,7 @@ func (db *RoseDB) getIndexNode(idxTree *art.AdaptiveRadixTree, key []byte) (*ind
 	return idxNode, nil
 }
 
-func (db *RoseDB) getVal(idxTree art.RadixTreeInterface,
-	key []byte, dataType DataType) ([]byte, error) {
+func (db *RoseDB) getVal(idxTree art.RadixTreeInterface, key []byte) ([]byte, error) {
 
 	// Get index info from an adaptive radix tree in memory.
 	rawValue := idxTree.Get(key)
@@ -274,9 +258,9 @@ func (db *RoseDB) getVal(idxTree art.RadixTreeInterface,
 	}
 
 	// In KeyOnlyMemMode, the value not in memory, so get the value from log file at the offset.
-	logFile := db.getActiveLogFile(dataType)
+	logFile := db.getActiveLogFile(idxTree.DataType())
 	if logFile.Fid != idxNode.fid {
-		logFile = db.getArchivedLogFile(dataType, idxNode.fid)
+		logFile = db.getArchivedLogFile(idxTree.DataType(), idxNode.fid)
 	}
 	if logFile == nil {
 		return nil, server.ErrLogFileNotFound

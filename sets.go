@@ -28,14 +28,14 @@ func (db *RoseDB) SAdd(expireAt int64, key []byte, members ...[]byte) error {
 		db.setIndex.murhash.Reset()
 
 		ent := &logfile.LogEntry{Key: key, Value: mem, ExpiredAt: expireAt}
-		valuePos, err := db.writeLogEntry(ent, Set)
+		valuePos, err := db.writeLogEntry(ent, server.Set)
 		if err != nil {
 			return err
 		}
 		entry := &logfile.LogEntry{Key: sum, Value: mem}
 		_, size := logfile.EncodeEntry(ent)
 		valuePos.entrySize = size
-		if err := db.updateIndexTree(idxTree, entry, valuePos, true, Set); err != nil {
+		if err := db.updateIndexTree(idxTree, entry, valuePos, true); err != nil {
 			return err
 		}
 	}
@@ -58,7 +58,7 @@ func (db *RoseDB) SPop(key []byte, count uint) ([][]byte, error) {
 		if node == nil {
 			continue
 		}
-		val, err := db.getVal(idxTree, node.Key(), Set)
+		val, err := db.getVal(idxTree, node.Key())
 		if err != nil {
 			return nil, err
 		}
@@ -86,7 +86,7 @@ func (db *RoseDB) SExpires(key []byte, expire time.Duration) error {
 		if err != nil || node == nil {
 			continue
 		}
-		val, err := db.getVal(idxTree, node.Key(), Set)
+		val, err := db.getVal(idxTree, node.Key())
 		if err != nil {
 			return err
 		}
@@ -262,17 +262,17 @@ func (db *RoseDB) sremInternal(key []byte, member []byte) error {
 		return nil
 	}
 	entry := &logfile.LogEntry{Key: key, Value: sum, Type: logfile.TypeDelete}
-	pos, err := db.writeLogEntry(entry, Set)
+	pos, err := db.writeLogEntry(entry, server.Set)
 	if err != nil {
 		return err
 	}
 
-	db.sendDiscard(val, updated, Set)
+	db.sendDiscard(val, updated, server.Set)
 	// The deleted entry itself is also invalid.
 	_, size := logfile.EncodeEntry(entry)
 	node := &indexNode{fid: pos.fid, entrySize: size}
 	select {
-	case db.discards[Set].valChan <- node:
+	case db.discards[server.Set].valChan <- node:
 	default:
 		logger.Warn("send to discard chan fail")
 	}
@@ -293,7 +293,7 @@ func (db *RoseDB) sMembers(key []byte) ([][]byte, error) {
 		if node == nil {
 			continue
 		}
-		val, err := db.getVal(idxTree, node.Key(), Set)
+		val, err := db.getVal(idxTree, node.Key())
 		if err != nil {
 			return nil, err
 		}

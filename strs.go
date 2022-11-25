@@ -21,12 +21,12 @@ func (db *RoseDB) Set(key, value []byte) error {
 
 	// write entry to log file.
 	entry := &logfile.LogEntry{Key: key, Value: value}
-	valuePos, err := db.writeLogEntry(entry, String)
+	valuePos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return err
 	}
 	// set String index info, stored at adaptive radix tree.
-	err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true, String)
+	err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true)
 	return err
 }
 
@@ -35,7 +35,7 @@ func (db *RoseDB) Set(key, value []byte) error {
 func (db *RoseDB) Get(key []byte) ([]byte, error) {
 	db.strIndex.mu.RLock()
 	defer db.strIndex.mu.RUnlock()
-	return db.getVal(db.strIndex.idxTree, key, String)
+	return db.getVal(db.strIndex.idxTree, key)
 }
 
 // MGet get the values of all specified keys.
@@ -49,7 +49,7 @@ func (db *RoseDB) MGet(keys [][]byte) ([][]byte, error) {
 	}
 	values := make([][]byte, len(keys))
 	for i, key := range keys {
-		val, err := db.getVal(db.strIndex.idxTree, key, String)
+		val, err := db.getVal(db.strIndex.idxTree, key)
 		if err != nil && !errors.Is(server.ErrKeyNotFound, err) {
 			return nil, err
 		}
@@ -64,7 +64,7 @@ func (db *RoseDB) GetRange(key []byte, start, end int) ([]byte, error) {
 	db.strIndex.mu.RLock()
 	defer db.strIndex.mu.RUnlock()
 
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +102,7 @@ func (db *RoseDB) GetDel(key []byte) ([]byte, error) {
 	db.strIndex.mu.Lock()
 	defer db.strIndex.mu.Unlock()
 
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil && err != server.ErrKeyNotFound {
 		return nil, err
 	}
@@ -111,17 +111,17 @@ func (db *RoseDB) GetDel(key []byte) ([]byte, error) {
 	}
 
 	entry := &logfile.LogEntry{Key: key, Type: logfile.TypeDelete}
-	pos, err := db.writeLogEntry(entry, String)
+	pos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return nil, err
 	}
 
 	oldVal, updated := db.strIndex.idxTree.Delete(key)
-	db.sendDiscard(oldVal, updated, String)
+	db.sendDiscard(oldVal, updated, server.String)
 	_, size := logfile.EncodeEntry(entry)
 	node := &indexNode{fid: pos.fid, entrySize: size}
 	select {
-	case db.discards[String].valChan <- node:
+	case db.discards[server.String].valChan <- node:
 	default:
 		logger.Warn("send to discard chan fail")
 	}
@@ -134,17 +134,17 @@ func (db *RoseDB) Delete(key []byte) error {
 	defer db.strIndex.mu.Unlock()
 
 	entry := &logfile.LogEntry{Key: key, Type: logfile.TypeDelete}
-	pos, err := db.writeLogEntry(entry, String)
+	pos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return err
 	}
 	val, updated := db.strIndex.idxTree.Delete(key)
-	db.sendDiscard(val, updated, String)
+	db.sendDiscard(val, updated, server.String)
 	// The deleted entry itself is also invalid.
 	_, size := logfile.EncodeEntry(entry)
 	node := &indexNode{fid: pos.fid, entrySize: size}
 	select {
-	case db.discards[String].valChan <- node:
+	case db.discards[server.String].valChan <- node:
 	default:
 		logger.Warn("send to discard chan fail")
 	}
@@ -158,12 +158,12 @@ func (db *RoseDB) SetEX(key, value []byte, duration time.Duration) error {
 
 	expiredAt := time.Now().Add(duration).Unix()
 	entry := &logfile.LogEntry{Key: key, Value: value, ExpiredAt: expiredAt}
-	valuePos, err := db.writeLogEntry(entry, String)
+	valuePos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return err
 	}
 
-	return db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true, String)
+	return db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true)
 }
 
 // SetNX sets the key-value pair if it is not exist. It returns nil if the key already exists.
@@ -171,7 +171,7 @@ func (db *RoseDB) SetNX(key, value []byte) error {
 	db.strIndex.mu.Lock()
 	defer db.strIndex.mu.Unlock()
 
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return err
 	}
@@ -181,12 +181,12 @@ func (db *RoseDB) SetNX(key, value []byte) error {
 	}
 
 	entry := &logfile.LogEntry{Key: key, Value: value}
-	valuePos, err := db.writeLogEntry(entry, String)
+	valuePos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return err
 	}
 
-	return db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true, String)
+	return db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true)
 }
 
 // MSet is multiple set command. Parameter order should be like "key", "value", "key", "value", ...
@@ -202,11 +202,11 @@ func (db *RoseDB) MSet(args ...[]byte) error {
 	for i := 0; i < len(args); i += 2 {
 		key, value := args[i], args[i+1]
 		entry := &logfile.LogEntry{Key: key, Value: value}
-		valuePos, err := db.writeLogEntry(entry, String)
+		valuePos, err := db.writeLogEntry(entry, server.String)
 		if err != nil {
 			return err
 		}
-		err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true, String)
+		err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true)
 		if err != nil {
 			return err
 		}
@@ -227,7 +227,7 @@ func (db *RoseDB) MSetNX(args ...[]byte) error {
 	// Firstly, check each keys whether they are exists.
 	for i := 0; i < len(args); i += 2 {
 		key := args[i]
-		val, err := db.getVal(db.strIndex.idxTree, key, String)
+		val, err := db.getVal(db.strIndex.idxTree, key)
 		if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 			return err
 		}
@@ -248,11 +248,11 @@ func (db *RoseDB) MSetNX(args ...[]byte) error {
 			continue
 		}
 		entry := &logfile.LogEntry{Key: key, Value: value}
-		valPos, err := db.writeLogEntry(entry, String)
+		valPos, err := db.writeLogEntry(entry, server.String)
 		if err != nil {
 			return err
 		}
-		err = db.updateIndexTree(db.strIndex.idxTree, entry, valPos, true, String)
+		err = db.updateIndexTree(db.strIndex.idxTree, entry, valPos, true)
 		if err != nil {
 			return err
 		}
@@ -267,7 +267,7 @@ func (db *RoseDB) Append(key, value []byte) error {
 	db.strIndex.mu.Lock()
 	defer db.strIndex.mu.Unlock()
 
-	oldVal, err := db.getVal(db.strIndex.idxTree, key, String)
+	oldVal, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return err
 	}
@@ -278,11 +278,11 @@ func (db *RoseDB) Append(key, value []byte) error {
 	}
 	// write entry to log file.
 	entry := &logfile.LogEntry{Key: key, Value: value}
-	valuePos, err := db.writeLogEntry(entry, String)
+	valuePos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return err
 	}
-	err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true, String)
+	err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true)
 	return err
 }
 
@@ -328,7 +328,7 @@ func (db *RoseDB) IncrBy(key []byte, incr int64) (int64, error) {
 
 // incrDecrBy is a helper method for Incr, IncrBy, Decr, and DecrBy methods. It updates the key by incr.
 func (db *RoseDB) incrDecrBy(key []byte, incr int64) (int64, error) {
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return 0, err
 	}
@@ -348,11 +348,11 @@ func (db *RoseDB) incrDecrBy(key []byte, incr int64) (int64, error) {
 	valInt64 += incr
 	val = []byte(strconv.FormatInt(valInt64, 10))
 	entry := &logfile.LogEntry{Key: key, Value: val}
-	valuePos, err := db.writeLogEntry(entry, String)
+	valuePos, err := db.writeLogEntry(entry, server.String)
 	if err != nil {
 		return 0, err
 	}
-	err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true, String)
+	err = db.updateIndexTree(db.strIndex.idxTree, entry, valuePos, true)
 	if err != nil {
 		return 0, err
 	}
@@ -365,7 +365,7 @@ func (db *RoseDB) StrLen(key []byte) int {
 	db.strIndex.mu.RLock()
 	defer db.strIndex.mu.RUnlock()
 
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil {
 		return 0
 	}
@@ -415,7 +415,7 @@ func (db *RoseDB) Scan(prefix []byte, pattern string, count int) ([][]byte, erro
 		if reg != nil && !reg.Match(key) {
 			continue
 		}
-		val, err := db.getVal(db.strIndex.idxTree, key, String)
+		val, err := db.getVal(db.strIndex.idxTree, key)
 		if err != nil && err != server.ErrKeyNotFound {
 			return nil, err
 		}
@@ -432,7 +432,7 @@ func (db *RoseDB) StrExpire(key []byte, duration time.Duration) error {
 		return nil
 	}
 	db.strIndex.mu.RLock()
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil {
 		db.strIndex.mu.RUnlock()
 		return err
@@ -460,7 +460,7 @@ func (db *RoseDB) TTL(key []byte) (int64, error) {
 // Persist remove the expiration time for the given key.
 func (db *RoseDB) Persist(key []byte) error {
 	db.strIndex.mu.Lock()
-	val, err := db.getVal(db.strIndex.idxTree, key, String)
+	val, err := db.getVal(db.strIndex.idxTree, key)
 	if err != nil {
 		db.strIndex.mu.Unlock()
 		return err

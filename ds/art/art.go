@@ -2,6 +2,8 @@ package art
 
 import (
 	goart "github.com/plar/go-adaptive-radix-tree"
+
+	"github.com/flower-corp/rosedb/server"
 )
 
 type RadixTreeInterface interface {
@@ -11,10 +13,13 @@ type RadixTreeInterface interface {
 	Iterator() goart.Iterator
 	PrefixScan(prefix []byte, count int) (keys [][]byte)
 	Size() int
+	SetDataType(dType server.DataType) *AdaptiveRadixTree
+	DataType() server.DataType
 }
 
 type AdaptiveRadixTree struct {
 	tree goart.Tree
+	dataType server.DataType
 }
 
 func NewART() *AdaptiveRadixTree {
@@ -65,6 +70,15 @@ func (art *AdaptiveRadixTree) Size() int {
 	return art.tree.Size()
 }
 
+func (art *AdaptiveRadixTree) SetDataType(dType server.DataType) *AdaptiveRadixTree {
+	art.dataType = dType
+	return art
+}
+
+func (art *AdaptiveRadixTree) DataType() server.DataType {
+	return art.dataType
+}
+
 //tree with expire timeStamp
 type AdaptiveRadixTreeExpire struct {
 	AdaptiveRadixTree
@@ -74,6 +88,5 @@ type AdaptiveRadixTreeExpire struct {
 func NewARTExpire() *AdaptiveRadixTreeExpire {
 	return &AdaptiveRadixTreeExpire{
 		AdaptiveRadixTree: *NewART(),
-		//ExpireAt:          0,
 	}
 }

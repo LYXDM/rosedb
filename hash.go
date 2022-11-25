@@ -33,7 +33,7 @@ func (db *RoseDB) HSet(expireAt int64, key []byte, args ...[]byte) error {
 		field, value := args[i], args[i+1]
 		hashKey := db.encodeKey(key, field)
 		entry := &logfile.LogEntry{Key: hashKey, Value: value, ExpiredAt: expireAt}
-		valuePos, err := db.writeLogEntry(entry, Hash)
+		valuePos, err := db.writeLogEntry(entry, server.Hash)
 		if err != nil {
 			return err
 		}
@@ -41,7 +41,7 @@ func (db *RoseDB) HSet(expireAt int64, key []byte, args ...[]byte) error {
 		ent := &logfile.LogEntry{Key: field, Value: value}
 		_, size := logfile.EncodeEntry(entry)
 		valuePos.entrySize = size
-		err = db.updateIndexTree(idxTree, ent, valuePos, true, Hash)
+		err = db.updateIndexTree(idxTree, ent, valuePos, true)
 		if err != nil {
 			return err
 		}
@@ -57,7 +57,7 @@ func (db *RoseDB) HSetNX(key, field, value []byte) (bool, error) {
 	defer db.hashIndex.mu.Unlock()
 
 	idxTree := db.hashIndex.GetTreeWithNew(key)
-	val, err := db.getVal(idxTree, field, Hash)
+	val, err := db.getVal(idxTree, field)
 	if err != nil {
 		return false, err
 	}
@@ -80,7 +80,7 @@ func (db *RoseDB) HGet(key, field []byte) ([]byte, error) {
 	if idxTree == nil {
 		return nil, nil
 	}
-	val, err := db.getVal(idxTree, field, Hash)
+	val, err := db.getVal(idxTree, field)
 	if err == server.ErrKeyNotFound {
 		return nil, nil
 	}
@@ -107,7 +107,7 @@ func (db *RoseDB) HMGet(key []byte, fields ...[]byte) (vals [][]byte, err error)
 	// key exist
 
 	for _, field := range fields {
-		val, err := db.getVal(idxTree, field, Hash)
+		val, err := db.getVal(idxTree, field)
 		if err == server.ErrKeyNotFound {
 			vals = append(vals, nil)
 		} else {
@@ -133,7 +133,7 @@ func (db *RoseDB) HDel(key []byte, fields ...[]byte) (int, error) {
 	for _, field := range fields {
 		hashKey := db.encodeKey(key, field)
 		entry := &logfile.LogEntry{Key: hashKey, Type: logfile.TypeDelete}
-		valuePos, err := db.writeLogEntry(entry, Hash)
+		valuePos, err := db.writeLogEntry(entry, server.Hash)
 		if err != nil {
 			return 0, err
 		}
@@ -142,12 +142,12 @@ func (db *RoseDB) HDel(key []byte, fields ...[]byte) (int, error) {
 		if updated {
 			count++
 		}
-		db.sendDiscard(val, updated, Hash)
+		db.sendDiscard(val, updated, server.Hash)
 		// The deleted entry itself is also invalid.
 		_, size := logfile.EncodeEntry(entry)
 		node := &indexNode{fid: valuePos.fid, entrySize: size}
 		select {
-		case db.discards[Hash].valChan <- node:
+		case db.discards[server.Hash].valChan <- node:
 		default:
 			logger.Warn("send to discard chan fail")
 		}
@@ -166,7 +166,7 @@ func (db *RoseDB) HExists(key, field []byte) (bool, error) {
 	if idxTree == nil {
 		return false, nil
 	}
-	val, err := db.getVal(idxTree, field, Hash)
+	val, err := db.getVal(idxTree, field)
 	if err != nil && err != server.ErrKeyNotFound {
 		return false, err
 	}
@@ -223,7 +223,7 @@ func (db *RoseDB) HVals(key []byte) ([][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		val, err := db.getVal(tree, node.Key(), Hash)
+		val, err := db.getVal(tree, node.Key())
 		if err != nil && err != server.ErrKeyNotFound {
 			return nil, err
 		}
@@ -251,7 +251,7 @@ func (db *RoseDB) HGetAll(key []byte) ([][]byte, error) {
 			return nil, err
 		}
 		field := node.Key()
-		val, err := db.getVal(tree, field, Hash)
+		val, err := db.getVal(tree, field)
 		if err != nil && err != server.ErrKeyNotFound {
 			return nil, err
 		}
@@ -277,7 +277,7 @@ func (db *RoseDB) HExpire(key []byte, expire time.Duration) error {
 			return err
 		}
 		field := node.Key()
-		val, err := db.getVal(tree, field, Hash)
+		val, err := db.getVal(tree, field)
 		if err != nil && err != server.ErrKeyNotFound {
 			return err
 		}
@@ -299,7 +299,7 @@ func (db *RoseDB) HStrLen(key, field []byte) int {
 	if idxTree == nil {
 		return 0
 	}
-	val, err := db.getVal(idxTree, field, Hash)
+	val, err := db.getVal(idxTree, field)
 	if err == server.ErrKeyNotFound {
 		return 0
 	}
@@ -340,7 +340,7 @@ func (db *RoseDB) HScan(key []byte, prefix []byte, pattern string, count int) ([
 		if reg != nil && !reg.Match(field) {
 			continue
 		}
-		val, err := db.getVal(idxTree, field, Hash)
+		val, err := db.getVal(idxTree, field)
 		if err != nil && err != server.ErrKeyNotFound {
 			return nil, err
 		}
@@ -359,7 +359,7 @@ func (db *RoseDB) HIncrBy(key, field []byte, incr int64) (int64, error) {
 	defer db.hashIndex.mu.Unlock()
 
 	idxTree := db.hashIndex.GetTreeWithNew(key)
-	val, err := db.getVal(idxTree, field, Hash)
+	val, err := db.getVal(idxTree, field)
 	if err != nil && !errors.Is(err, server.ErrKeyNotFound) {
 		return 0, err
 	}
@@ -381,7 +381,7 @@ func (db *RoseDB) HIncrBy(key, field []byte, incr int64) (int64, error) {
 
 	hashKey := db.encodeKey(key, field)
 	ent := &logfile.LogEntry{Key: hashKey, Value: val}
-	valuePos, err := db.writeLogEntry(ent, Hash)
+	valuePos, err := db.writeLogEntry(ent, server.Hash)
 	if err != nil {
 		return 0, err
 	}
@@ -389,7 +389,7 @@ func (db *RoseDB) HIncrBy(key, field []byte, incr int64) (int64, error) {
 	entry := &logfile.LogEntry{Key: field, Value: val}
 	_, size := logfile.EncodeEntry(ent)
 	valuePos.entrySize = size
-	err = db.updateIndexTree(idxTree, entry, valuePos, true, Hash)
+	err = db.updateIndexTree(idxTree, entry, valuePos, true)
 	if err != nil {
 		return 0, err
 	}

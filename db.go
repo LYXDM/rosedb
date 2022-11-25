@@ -27,10 +27,10 @@ import (
 type (
 	// RoseDB a db instance.
 	RoseDB struct {
-		activeLogFiles   map[DataType]*logfile.LogFile
-		archivedLogFiles map[DataType]archivedFiles
-		fidMap           map[DataType][]uint32 // only used at startup, never update even though log files changed.
-		discards         map[DataType]*discard
+		activeLogFiles   map[server.DataType]*logfile.LogFile
+		archivedLogFiles map[server.DataType]archivedFiles
+		fidMap           map[server.DataType][]uint32 // only used at startup, never update even though log files changed.
+		discards         map[server.DataType]*discard
 		opts             Options
 		strIndex         *strIndex  // String indexes(adaptive-radix-tree).
 		listIndex        *listIndex // List indexes.
@@ -89,11 +89,27 @@ type (
 )
 
 func newStrsIndex() *strIndex {
-	return &strIndex{idxTree: art.NewART(), mu: new(sync.RWMutex)}
+	return &strIndex{idxTree: art.NewART().SetDataType(server.String), mu: new(sync.RWMutex)}
 }
 
 func newListIdx() *listIndex {
 	return &listIndex{trees: make(map[string]*art.AdaptiveRadixTree), mu: new(sync.RWMutex)}
+}
+
+func (h *listIndex) GetTree(key []byte) *art.AdaptiveRadixTree {
+	tree := h.trees[string(key)]
+	return tree
+}
+
+func (h *listIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTree {
+	tree := h.GetTree(key)
+	if tree != nil {
+		return tree
+	}
+	tree = art.NewART()
+	tree.SetDataType(server.List)
+	h.trees[string(key)] = tree
+	return tree
 }
 
 func newHashIdx() *hashIndex {
@@ -119,6 +135,7 @@ func (h *hashIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTreeExpire {
 		return tree
 	}
 	tree = art.NewARTExpire()
+	tree.SetDataType(server.Hash)
 	h.trees[string(key)] = tree
 	return tree
 }
@@ -145,6 +162,7 @@ func (s *setIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTreeExpire {
 		return tree
 	}
 	tree = art.NewARTExpire()
+	tree.SetDataType(server.Set)
 	s.trees[string(key)] = tree
 	return tree
 }
@@ -174,6 +192,7 @@ func (z *zsetIndex) GetTreeWithNew(key []byte) *art.AdaptiveRadixTreeExpire {
 		return tree
 	}
 	tree = art.NewARTExpire()
+	tree.SetDataType(server.ZSet)
 	z.trees[string(key)] = tree
 	return tree
 }
@@ -195,8 +214,8 @@ func Open(opts Options) (*RoseDB, error) {
 	}
 
 	db := &RoseDB{
-		activeLogFiles:   make(map[DataType]*logfile.LogFile),
-		archivedLogFiles: make(map[DataType]archivedFiles),
+		activeLogFiles:   make(map[server.DataType]*logfile.LogFile),
+		archivedLogFiles: make(map[server.DataType]archivedFiles),
 		opts:             opts,
 		fileLock:         lockGuard,
 		strIndex:         newStrsIndex(),
@@ -313,7 +332,7 @@ func (db *RoseDB) Backup(path string) error {
 }
 
 // RunLogFileGC run log file garbage collection manually.
-func (db *RoseDB) RunLogFileGC(dataType DataType, fid int, gcRatio float64) error {
+func (db *RoseDB) RunLogFileGC(dataType server.DataType, fid int, gcRatio float64) error {
 	if atomic.LoadInt32(&db.gcState) > 0 {
 		return server.ErrGCRunning
 	}
@@ -324,13 +343,13 @@ func (db *RoseDB) isClosed() bool {
 	return atomic.LoadUint32(&db.closed) == 1
 }
 
-func (db *RoseDB) getActiveLogFile(dataType DataType) *logfile.LogFile {
+func (db *RoseDB) getActiveLogFile(dataType server.DataType) *logfile.LogFile {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	return db.activeLogFiles[dataType]
 }
 
-func (db *RoseDB) getArchivedLogFile(dataType DataType, fid uint32) *logfile.LogFile {
+func (db *RoseDB) getArchivedLogFile(dataType server.DataType, fid uint32) *logfile.LogFile {
 	var lf *logfile.LogFile
 	db.mu.RLock()
 	defer db.mu.RUnlock()
@@ -342,7 +361,7 @@ func (db *RoseDB) getArchivedLogFile(dataType DataType, fid uint32) *logfile.Log
 }
 
 // write entry to log file.
-func (db *RoseDB) writeLogEntry(ent *logfile.LogEntry, dataType DataType) (*valuePos, error) {
+func (db *RoseDB) writeLogEntry(ent *logfile.LogEntry, dataType server.DataType) (*valuePos, error) {
 	if err := db.initLogFile(dataType); err != nil {
 		return nil, err
 	}
@@ -399,7 +418,7 @@ func (db *RoseDB) loadLogFiles() error {
 		return err
 	}
 
-	fidMap := make(map[DataType][]uint32)
+	fidMap := make(map[server.DataType][]uint32)
 	for _, file := range fileInfos {
 		if strings.HasPrefix(file.Name(), logfile.FilePrefix) {
 			splitNames := strings.Split(file.Name(), ".")
@@ -407,7 +426,7 @@ func (db *RoseDB) loadLogFiles() error {
 			if err != nil {
 				return err
 			}
-			typ := DataType(logfile.FileTypesMap[splitNames[1]])
+			typ := server.DataType(logfile.FileTypesMap[splitNames[1]])
 			fidMap[typ] = append(fidMap[typ], uint32(fid))
 		}
 	}
@@ -443,7 +462,7 @@ func (db *RoseDB) loadLogFiles() error {
 	return nil
 }
 
-func (db *RoseDB) initLogFile(dataType DataType) error {
+func (db *RoseDB) initLogFile(dataType server.DataType) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -470,14 +489,14 @@ func (db *RoseDB) initDiscard() error {
 		}
 	}
 
-	discards := make(map[DataType]*discard)
-	for i := String; i < server.LogFileTypeNum; i++ {
-		name := logfile.FileNamesMap[logfile.FileType(i)] + discardFileName
+	discards := make(map[server.DataType]*discard)
+	for i := logfile.Strs; i <= logfile.ZSet; i++ {
+		name := logfile.FileNamesMap[i] + discardFileName
 		dis, err := newDiscard(discardPath, name, db.opts.DiscardBufferSize)
 		if err != nil {
 			return err
 		}
-		discards[i] = dis
+		discards[server.DataType(i)] = dis
 	}
 	db.discards = discards
 	return nil
@@ -509,7 +528,7 @@ func (db *RoseDB) decodeKey(key []byte) ([]byte, []byte) {
 	return key[index:sep], key[sep:]
 }
 
-func (db *RoseDB) sendDiscard(oldVal interface{}, updated bool, dataType DataType) {
+func (db *RoseDB) sendDiscard(oldVal interface{}, updated bool, dataType server.DataType) {
 	if !updated || oldVal == nil {
 		return
 	}
@@ -549,8 +568,8 @@ func (db *RoseDB) handleLogFileGC() {
 }
 
 func (db *RoseDB) doRunGCAsync() {
-	for dType := String; dType < server.LogFileTypeNum; dType++ {
-		go func(dataType DataType) {
+	for dType := server.String; dType <= server.ZSet; dType++ {
+		go func(dataType server.DataType) {
 			err := db.doRunGC(dataType, -1, db.opts.LogFileGCRatio)
 			if err != nil {
 				logger.Errorf("log file gc err, dataType: [%v], err: [%v]", dataType, err)
@@ -560,15 +579,15 @@ func (db *RoseDB) doRunGCAsync() {
 }
 
 func (db *RoseDB) doRunGCSync() {
-	for dType := String; dType < server.LogFileTypeNum; dType++ {
-		if err := db.doRunGC(dType, -1, 0); err != nil { //all archived do gc
+	for dType := server.String; dType <= server.ZSet; dType++ {
+		if err := db.doRunGC(dType, -1, 0); err != nil { //all archived file do gc
 			logger.Errorf("log file gc err, dataType: [%v], err: [%v]", dType, err)
 		}
 	}
 	logger.Infof("log file gc success")
 }
 
-func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) error {
+func (db *RoseDB) doRunGC(dataType server.DataType, specifiedFid int, gcRatio float64) error {
 	atomic.AddInt32(&db.gcState, 1)
 	defer atomic.AddInt32(&db.gcState, -1)
 
@@ -583,12 +602,12 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 		node, _ := indexVal.(*indexNode)
 		if node != nil && node.fid == fid && node.offset == offset {
 			// rewrite entry
-			valuePos, err := db.writeLogEntry(ent, String)
+			valuePos, err := db.writeLogEntry(ent, server.String)
 			if err != nil {
 				return err
 			}
 			// update index
-			if err = db.updateIndexTree(db.strIndex.idxTree, ent, valuePos, false, String); err != nil {
+			if err = db.updateIndexTree(db.strIndex.idxTree, ent, valuePos, false); err != nil {
 				return err
 			}
 		}
@@ -613,11 +632,11 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 
 		node, _ := indexVal.(*indexNode)
 		if node != nil && node.fid == fid && node.offset == offset {
-			valuePos, err := db.writeLogEntry(ent, List)
+			valuePos, err := db.writeLogEntry(ent, server.List)
 			if err != nil {
 				return err
 			}
-			if err = db.updateIndexTree(idxTree, ent, valuePos, false, List); err != nil {
+			if err = db.updateIndexTree(idxTree, ent, valuePos, false); err != nil {
 				return err
 			}
 		}
@@ -640,7 +659,7 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 		node, _ := indexVal.(*indexNode)
 		if node != nil && node.fid == fid && node.offset == offset {
 			// rewrite entry
-			valuePos, err := db.writeLogEntry(ent, Hash)
+			valuePos, err := db.writeLogEntry(ent, server.Hash)
 			if err != nil {
 				return err
 			}
@@ -648,7 +667,7 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 			entry := &logfile.LogEntry{Key: field, Value: ent.Value}
 			_, size := logfile.EncodeEntry(ent)
 			valuePos.entrySize = size
-			if err = db.updateIndexTree(idxTree, entry, valuePos, false, Hash); err != nil {
+			if err = db.updateIndexTree(idxTree, entry, valuePos, false); err != nil {
 				return err
 			}
 		}
@@ -675,7 +694,7 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 		node, _ := indexVal.(*indexNode)
 		if node != nil && node.fid == fid && node.offset == offset {
 			// rewrite entry
-			valuePos, err := db.writeLogEntry(ent, Set)
+			valuePos, err := db.writeLogEntry(ent, server.Set)
 			if err != nil {
 				return err
 			}
@@ -683,7 +702,7 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 			entry := &logfile.LogEntry{Key: sum, Value: ent.Value}
 			_, size := logfile.EncodeEntry(ent)
 			valuePos.entrySize = size
-			if err = db.updateIndexTree(idxTree, entry, valuePos, false, Set); err != nil {
+			if err = db.updateIndexTree(idxTree, entry, valuePos, false); err != nil {
 				return err
 			}
 		}
@@ -710,14 +729,14 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 		}
 		node, _ := indexVal.(*indexNode)
 		if node != nil && node.fid == fid && node.offset == offset {
-			valuePos, err := db.writeLogEntry(ent, ZSet)
+			valuePos, err := db.writeLogEntry(ent, server.ZSet)
 			if err != nil {
 				return err
 			}
 			entry := &logfile.LogEntry{Key: sum, Value: ent.Value}
 			_, size := logfile.EncodeEntry(ent)
 			valuePos.entrySize = size
-			if err = db.updateIndexTree(idxTree, entry, valuePos, false, ZSet); err != nil {
+			if err = db.updateIndexTree(idxTree, entry, valuePos, false); err != nil {
 				return err
 			}
 		}
@@ -764,15 +783,15 @@ func (db *RoseDB) doRunGC(dataType DataType, specifiedFid int, gcRatio float64) 
 			}
 			var rewriteErr error
 			switch dataType {
-			case String:
+			case server.String:
 				rewriteErr = maybeRewriteStrs(archivedFile.Fid, off, ent)
-			case List:
+			case server.List:
 				rewriteErr = maybeRewriteList(archivedFile.Fid, off, ent)
-			case Hash:
+			case server.Hash:
 				rewriteErr = maybeRewriteHash(archivedFile.Fid, off, ent)
-			case Set:
+			case server.Set:
 				rewriteErr = maybeRewriteSets(archivedFile.Fid, off, ent)
-			case ZSet:
+			case server.ZSet:
 				rewriteErr = maybeRewriteZSet(archivedFile.Fid, off, ent)
 			}
 			if rewriteErr != nil {
